@@ -1,0 +1,20 @@
+[package]
+name = "xo-human-first-agent"
+version = "0.1.0"
+description = "XO Human First AI desktop assistant"
+authors = ["XO"]
+edition = "2021"
+
+[lib]
+name = "xo_human_first_agent_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-log = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
