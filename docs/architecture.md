@@ -5,6 +5,7 @@
 - Desktop shell: Tauri
 - Frontend: React + TypeScript + Vite
 - Local storage: SQLite
+- Speech-to-text: browser microphone capture plus local Whisper model in the client
 - AI provider: OpenAI API through a local command boundary
 - Plugin model: capability modules with explicit permissions
 
@@ -46,4 +47,3 @@ Memory is transparent and user-editable. A first SQLite schema should separate:
 - knowledge
 
 Every saved memory should include source, timestamp, confidence, and user visibility.
-

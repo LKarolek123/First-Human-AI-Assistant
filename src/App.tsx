@@ -1,8 +1,10 @@
+import { useWhisperTranscription } from './voice/useWhisperTranscription';
+
 const priorities = ['dobro użytkownika', 'prywatność', 'szybkość', 'wygoda', 'automatyzacja', 'wygląd'];
 
 const mvpAreas = [
   { title: 'Desktop', items: ['tray icon', 'global shortcut', 'start z Windowsem'] },
-  { title: 'Voice First', items: ['wake word', 'STT', 'TTS', 'naturalna rozmowa'] },
+  { title: 'Voice First', items: ['STT po polsku', 'wake word', 'TTS', 'naturalna rozmowa'] },
   { title: 'AI Agent', items: ['streaming', 'function calling', 'planowanie działań'] },
   { title: 'Memory', items: ['SQLite', 'projekty', 'cele', 'transparentny panel pamięci'] },
   { title: 'Computer', items: ['pliki', 'aplikacje', 'terminal za zgodą'] },
@@ -10,6 +12,23 @@ const mvpAreas = [
 ];
 
 export function App() {
+  const {
+    error,
+    isSupported,
+    loadModel,
+    loadState,
+    modelId,
+    recordingState,
+    resetTranscript,
+    startRecording,
+    stopRecording,
+    transcript,
+  } = useWhisperTranscription();
+
+  const isRecording = recordingState === 'recording';
+  const isTranscribing = recordingState === 'transcribing';
+  const isBusy = isRecording || isTranscribing || loadState === 'loading';
+
   return (
     <main className="shell">
       <section className="hero">
@@ -17,17 +36,76 @@ export function App() {
           <p className="eyebrow">Human First AI</p>
           <h1>XO</h1>
           <p className="lead">
-            Desktopowy asystent AI, który ma być spokojnym, lokalnym centrum pracy,
-            pamięci i codziennego wsparcia.
+            Desktopowy asystent AI, który ma być spokojnym, lokalnym centrum pracy, pamięci i
+            codziennego wsparcia.
           </p>
         </div>
 
         <div className="statusPanel" aria-label="Status MVP">
-          <span className="pulse" />
+          <span className={isRecording ? 'pulse pulseActive' : 'pulse'} />
           <div>
-            <strong>MVP v1</strong>
-            <p>Fundament aplikacji gotowy do rozbudowy modułów.</p>
+            <strong>{isRecording ? 'Nagrywam po polsku' : 'MVP v1'}</strong>
+            <p>
+              {isRecording
+                ? 'XO zapisuje dźwięk lokalnie i przygotuje transkrypcję.'
+                : 'Fundament aplikacji gotowy do rozbudowy modułów.'}
+            </p>
           </div>
+        </div>
+      </section>
+
+      <section className="voicePanel" aria-labelledby="voice-heading">
+        <div className="voiceHeader">
+          <div>
+            <p className="eyebrow">Voice First</p>
+            <h2 id="voice-heading">Lokalne STT</h2>
+          </div>
+          <span className="languageBadge">pl-PL</span>
+        </div>
+
+        <div className="voiceControls">
+          <button
+            className={isRecording ? 'voiceButton voiceButtonActive' : 'voiceButton'}
+            type="button"
+            onClick={isRecording ? stopRecording : startRecording}
+            disabled={!isSupported || isTranscribing || loadState === 'loading'}
+            aria-pressed={isRecording}
+          >
+            <span className="micIcon" aria-hidden="true" />
+            {getVoiceButtonLabel(recordingState, loadState)}
+          </button>
+          <button
+            className="secondaryButton"
+            type="button"
+            onClick={loadModel}
+            disabled={!isSupported || loadState === 'loading' || loadState === 'ready'}
+          >
+            {loadState === 'ready' ? 'Model gotowy' : 'Załaduj model'}
+          </button>
+          <button className="secondaryButton" type="button" onClick={resetTranscript}>
+            Wyczyść
+          </button>
+        </div>
+
+        {!isSupported && (
+          <p className="voiceNotice">
+            Ta przeglądarka nie udostępnia nagrywania audio przez MediaRecorder.
+          </p>
+        )}
+
+        <p className="voiceNotice">
+          Model: {modelId}. Pierwsze ładowanie może chwilę potrwać, bo przeglądarka pobiera i
+          cache'uje lokalny model Whisper.
+        </p>
+
+        {error && <p className="voiceError">{error}</p>}
+
+        <div className={isBusy ? 'transcriptBox transcriptBoxBusy' : 'transcriptBox'} aria-live="polite">
+          {transcript ? (
+            <p>{transcript}</p>
+          ) : (
+            <p className="placeholderText">{getTranscriptPlaceholder(recordingState, loadState)}</p>
+          )}
         </div>
       </section>
 
@@ -56,3 +134,34 @@ export function App() {
   );
 }
 
+function getVoiceButtonLabel(recordingState: string, loadState: string) {
+  if (loadState === 'loading') {
+    return 'Ładuję';
+  }
+
+  if (recordingState === 'recording') {
+    return 'Zatrzymaj';
+  }
+
+  if (recordingState === 'transcribing') {
+    return 'Przepisuję';
+  }
+
+  return 'Nagraj';
+}
+
+function getTranscriptPlaceholder(recordingState: string, loadState: string) {
+  if (loadState === 'loading') {
+    return 'Ładuję model Whisper. Pierwszy raz może potrwać dłużej.';
+  }
+
+  if (recordingState === 'recording') {
+    return 'Mów po polsku. Kliknij „Zatrzymaj”, kiedy skończysz.';
+  }
+
+  if (recordingState === 'transcribing') {
+    return 'Przepisuję nagranie na tekst...';
+  }
+
+  return 'Kliknij „Nagraj”, powiedz coś po polsku, a XO przepisze nagranie lokalnym STT.';
+}

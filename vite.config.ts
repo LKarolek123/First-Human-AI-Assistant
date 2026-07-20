@@ -12,6 +12,9 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
   },
+  optimizeDeps: {
+    exclude: ['@huggingface/transformers'],
+  },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {
     target: process.env.TAURI_PLATFORM === 'windows' ? 'chrome105' : 'safari13',

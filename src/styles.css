@@ -105,6 +105,154 @@ h1 {
   box-shadow: 0 0 0 8px rgb(47 143 101 / 14%);
 }
 
+.pulseActive {
+  background: #b73b4a;
+  box-shadow: 0 0 0 8px rgb(183 59 74 / 14%);
+}
+
+.voicePanel {
+  display: grid;
+  gap: 20px;
+  padding: 34px 0;
+  border-bottom: 1px solid #d8d4cb;
+}
+
+.voiceHeader {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.voiceHeader h2 {
+  margin-bottom: 0;
+  color: #17201d;
+  font-size: clamp(1.4rem, 3vw, 2.1rem);
+}
+
+.languageBadge {
+  padding: 8px 10px;
+  border: 1px solid #cad7d1;
+  border-radius: 999px;
+  background: #eef6f1;
+  color: #253731;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.voiceControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.voiceButton,
+.secondaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border: 1px solid #bfcac5;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.voiceButton {
+  gap: 10px;
+  min-width: 128px;
+  padding: 0 18px;
+  background: #18211f;
+  color: #fffdf8;
+}
+
+.voiceButtonActive {
+  border-color: #8f2532;
+  background: #b73b4a;
+}
+
+.voiceButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.secondaryButton {
+  padding: 0 14px;
+  background: #fffdf8;
+  color: #26342f;
+}
+
+.micIcon {
+  position: relative;
+  width: 13px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-radius: 9px;
+}
+
+.micIcon::before {
+  position: absolute;
+  right: -6px;
+  bottom: -8px;
+  left: -6px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  border-left: 2px solid currentColor;
+  border-radius: 0 0 8px 8px;
+  content: "";
+}
+
+.micIcon::after {
+  position: absolute;
+  bottom: -12px;
+  left: 50%;
+  width: 2px;
+  height: 6px;
+  background: currentColor;
+  content: "";
+  transform: translateX(-50%);
+}
+
+.voiceNotice,
+.voiceError {
+  max-width: 760px;
+  margin-bottom: 0;
+  line-height: 1.5;
+}
+
+.voiceNotice {
+  color: #56625d;
+}
+
+.voiceError {
+  color: #8f2532;
+  font-weight: 650;
+}
+
+.transcriptBox {
+  min-height: 150px;
+  padding: 18px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #25312d;
+  line-height: 1.55;
+}
+
+.transcriptBoxBusy {
+  border-color: #bfcac5;
+  background: #f8fbf9;
+}
+
+.transcriptBox p {
+  margin-bottom: 0;
+}
+
+.placeholderText {
+  color: #67736e;
+}
+
 .priorityBand {
   display: grid;
   grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
@@ -178,5 +326,14 @@ h1 {
   .moduleGrid {
     gap: 12px;
   }
-}
 
+  .voiceHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .voiceButton,
+  .secondaryButton {
+    width: 100%;
+  }
+}

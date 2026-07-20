@@ -55,7 +55,7 @@
 
 ### Stage 2 - Voice
 
-- [ ] Speech-to-text
+- [x] Local speech-to-text with Whisper, default Polish `pl-PL`
 - [ ] Text-to-speech
 - [ ] Streaming responses
 - [ ] Conversation mode
@@ -110,4 +110,3 @@
 - [ ] Task queue
 - [ ] High-risk operation confirmation
 - [ ] Proactive suggestions
-
