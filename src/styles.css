@@ -117,6 +117,101 @@ h1 {
   border-bottom: 1px solid #d8d4cb;
 }
 
+.assistantPanel {
+  display: grid;
+  gap: 18px;
+  padding: 34px 0;
+  border-bottom: 1px solid #d8d4cb;
+}
+
+.assistantHeader {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.assistantHeader h2 {
+  margin-bottom: 0;
+  color: #17201d;
+  font-size: clamp(1.4rem, 3vw, 2.1rem);
+}
+
+.promptForm {
+  display: grid;
+  gap: 10px;
+  max-width: 900px;
+}
+
+.promptLabel {
+  color: #25312d;
+  font-size: 0.95rem;
+  font-weight: 750;
+}
+
+.promptInput {
+  width: 100%;
+  min-height: 154px;
+  padding: 16px;
+  resize: vertical;
+  border: 1px solid #c8cec9;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #25312d;
+  line-height: 1.5;
+}
+
+.promptInput:focus {
+  border-color: #2f8f65;
+  outline: 3px solid rgb(47 143 101 / 16%);
+}
+
+.promptActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.primaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid #1f6747;
+  border-radius: 8px;
+  background: #2f8f65;
+  color: #fffdf8;
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.primaryButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.feedbackBox {
+  min-height: 150px;
+  max-width: 900px;
+  padding: 18px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #25312d;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.feedbackBoxBusy {
+  border-color: #bfcac5;
+  background: #f8fbf9;
+}
+
+.feedbackBox p {
+  margin-bottom: 0;
+}
+
 .voiceHeader {
   display: flex;
   gap: 18px;
@@ -223,6 +318,38 @@ h1 {
 
 .voiceNotice {
   color: #56625d;
+}
+
+.meterPanel {
+  display: grid;
+  gap: 8px;
+  max-width: 760px;
+}
+
+.meterHeader {
+  display: flex;
+  justify-content: space-between;
+  color: #56625d;
+  font-size: 0.92rem;
+  font-weight: 650;
+}
+
+.meterTrack {
+  position: relative;
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid #cad7d1;
+  border-radius: 999px;
+  background: #edf0eb;
+}
+
+.meterFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 2px;
+  border-radius: inherit;
+  background: #2f8f65;
+  transition: width 80ms linear;
 }
 
 .voiceError {
@@ -332,6 +459,12 @@ h1 {
     flex-direction: column;
   }
 
+  .assistantHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .primaryButton,
   .voiceButton,
   .secondaryButton {
     width: 100%;

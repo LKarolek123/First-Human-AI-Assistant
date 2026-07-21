@@ -24,6 +24,18 @@ npm run test
 npm run tauri dev
 ```
 
+## GPT Feedback
+
+The typing feedback panel calls the OpenAI Responses API from a Tauri backend command, so the API
+key does not go into the Vite frontend bundle. For local MVP use, create a `.env.local` file:
+
+```bash
+OPENAI_API_KEY=your_api_key
+OPENAI_MODEL=gpt-4.1-mini
+```
+
+`OPENAI_MODEL` is optional.
+
 ## Product Priority
 
 1. User wellbeing

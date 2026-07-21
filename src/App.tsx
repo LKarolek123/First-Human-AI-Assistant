@@ -1,3 +1,5 @@
+import { type FormEvent, useState } from 'react';
+import { requestGptFeedback } from './ai/openaiFeedback';
 import { useWhisperTranscription } from './voice/useWhisperTranscription';
 
 const priorities = ['dobro użytkownika', 'prywatność', 'szybkość', 'wygoda', 'automatyzacja', 'wygląd'];
@@ -14,20 +16,61 @@ const mvpAreas = [
 export function App() {
   const {
     error,
+    inputLevel,
     isSupported,
     loadModel,
     loadState,
     modelId,
+    peakInputLevel,
     recordingState,
     resetTranscript,
     startRecording,
     stopRecording,
     transcript,
   } = useWhisperTranscription();
+  const [typedPrompt, setTypedPrompt] = useState('');
+  const [feedback, setFeedback] = useState('');
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [feedbackState, setFeedbackState] = useState<'idle' | 'loading'>('idle');
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
   const isBusy = isRecording || isTranscribing || loadState === 'loading';
+  const promptText = typedPrompt.trim() || transcript.trim();
+  const canAskGpt = promptText.length > 0 && feedbackState !== 'loading';
+
+  async function handleFeedbackSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!promptText) {
+      setFeedbackError('Wpisz pytanie albo użyj transkrypcji z mikrofonu.');
+      return;
+    }
+
+    setFeedback('');
+    setFeedbackError(null);
+    setFeedbackState('loading');
+
+    try {
+      const nextFeedback = await requestGptFeedback({ input: promptText });
+      setFeedback(nextFeedback);
+    } catch (feedbackRequestError) {
+      setFeedbackError(getFeedbackErrorMessage(feedbackRequestError));
+    } finally {
+      setFeedbackState('idle');
+    }
+  }
+
+  function handleUseTranscript() {
+    setTypedPrompt(transcript);
+    setFeedbackError(null);
+  }
+
+  function handleClearPrompt() {
+    setTypedPrompt('');
+    setFeedback('');
+    setFeedbackError(null);
+  }
 
   return (
     <main className="shell">
@@ -44,13 +87,65 @@ export function App() {
         <div className="statusPanel" aria-label="Status MVP">
           <span className={isRecording ? 'pulse pulseActive' : 'pulse'} />
           <div>
-            <strong>{isRecording ? 'Nagrywam po polsku' : 'MVP v1'}</strong>
+            <strong>{isRecording ? 'Nagrywam po polsku' : 'Typing + GPT'}</strong>
             <p>
               {isRecording
                 ? 'XO zapisuje dźwięk lokalnie i przygotuje transkrypcję.'
-                : 'Fundament aplikacji gotowy do rozbudowy modułów.'}
+                : 'Możesz wpisać pytanie ręcznie albo użyć transkrypcji jako promptu.'}
             </p>
           </div>
+        </div>
+      </section>
+
+      <section className="assistantPanel" aria-labelledby="assistant-heading">
+        <div className="assistantHeader">
+          <div>
+            <p className="eyebrow">AI Agent</p>
+            <h2 id="assistant-heading">Feedback GPT</h2>
+          </div>
+          <span className="languageBadge">typing</span>
+        </div>
+
+        <form className="promptForm" onSubmit={handleFeedbackSubmit}>
+          <label className="promptLabel" htmlFor="prompt">
+            Twoje pytanie
+          </label>
+          <textarea
+            id="prompt"
+            className="promptInput"
+            value={typedPrompt}
+            onChange={(event) => setTypedPrompt(event.target.value)}
+            placeholder="Wpisz, nad czym pracujesz albo czego potrzebujesz. Jeśli zostawisz pole puste, XO użyje ostatniej transkrypcji."
+            rows={6}
+          />
+          <div className="promptActions">
+            <button className="primaryButton" type="submit" disabled={!canAskGpt}>
+              {feedbackState === 'loading' ? 'Pytam GPT' : 'Poproś o feedback'}
+            </button>
+            <button
+              className="secondaryButton"
+              type="button"
+              onClick={handleUseTranscript}
+              disabled={!transcript || feedbackState === 'loading'}
+            >
+              Użyj transkrypcji
+            </button>
+            <button className="secondaryButton" type="button" onClick={handleClearPrompt}>
+              Wyczyść prompt
+            </button>
+          </div>
+        </form>
+
+        {feedbackError && <p className="voiceError">{feedbackError}</p>}
+
+        <div className={feedbackState === 'loading' ? 'feedbackBox feedbackBoxBusy' : 'feedbackBox'} aria-live="polite">
+          {feedback ? (
+            <p>{feedback}</p>
+          ) : (
+            <p className="placeholderText">
+              Feedback pojawi się tutaj po wysłaniu pytania.
+            </p>
+          )}
         </div>
       </section>
 
@@ -87,6 +182,16 @@ export function App() {
           </button>
         </div>
 
+        <div className="meterPanel" aria-label="Poziom mikrofonu">
+          <div className="meterHeader">
+            <span>Poziom mikrofonu</span>
+            <span>{getLevelLabel(inputLevel, peakInputLevel)}</span>
+          </div>
+          <div className="meterTrack">
+            <span className="meterFill" style={{ width: `${Math.round(inputLevel * 100)}%` }} />
+          </div>
+        </div>
+
         {!isSupported && (
           <p className="voiceNotice">
             Ta przeglądarka nie udostępnia nagrywania audio przez MediaRecorder.
@@ -94,8 +199,8 @@ export function App() {
         )}
 
         <p className="voiceNotice">
-          Model: {modelId}. Używa dokładniejszego trybu STT, redukcji echa, tłumienia szumu i
-          normalizacji głosu. Pierwsze ładowanie może potrwać dłużej.
+          Model: {modelId}. Jeśli transkrypcja pokazuje „muzyka”, zwykle oznacza to za cichy głos,
+          tło z głośników albo brak wyraźnej mowy w nagraniu.
         </p>
 
         {error && <p className="voiceError">{error}</p>}
@@ -152,17 +257,40 @@ function getVoiceButtonLabel(recordingState: string, loadState: string) {
 
 function getTranscriptPlaceholder(recordingState: string, loadState: string) {
   if (loadState === 'loading') {
-    return 'Ładuję dokładniejszy model Whisper. Pierwszy raz może potrwać dłużej.';
+    return 'Ładuję model Whisper. Pierwszy raz może potrwać dłużej.';
   }
 
   if (recordingState === 'recording') {
-    return 'Mów po polsku. Kliknij „Zatrzymaj”, kiedy skończysz.';
+    return 'Mów po polsku. Obserwuj pasek mikrofonu i kliknij „Zatrzymaj”, kiedy skończysz.';
   }
 
   if (recordingState === 'transcribing') {
     return 'Przepisuję nagranie na tekst...';
   }
 
-  return 'Kliknij „Nagraj”, powiedz coś po polsku, a XO przepisze nagranie dokładniejszym lokalnym STT.';
+  return 'Kliknij „Nagraj”, powiedz coś po polsku, a XO przepisze nagranie lokalnym STT.';
 }
 
+function getLevelLabel(inputLevel: number, peakInputLevel: number) {
+  if (peakInputLevel === 0) {
+    return 'czekam';
+  }
+
+  if (inputLevel < 0.08 && peakInputLevel < 0.12) {
+    return 'za cicho';
+  }
+
+  if (inputLevel > 0.85) {
+    return 'za głośno';
+  }
+
+  return 'OK';
+}
+
+function getFeedbackErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'Nie udało się pobrać feedbacku z GPT.';
+}

@@ -55,7 +55,7 @@
 
 ### Stage 2 - Voice
 
-- [x] Local speech-to-text with Whisper Base, default Polish `pl-PL`
+- [x] Local speech-to-text with Whisper, default Polish `pl-PL`
 - [ ] Text-to-speech
 - [ ] Streaming responses
 - [ ] Conversation mode
