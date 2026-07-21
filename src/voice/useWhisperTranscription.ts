@@ -12,8 +12,16 @@ type AutomaticSpeechRecognitionPipelineFactory = (
   model: string,
 ) => Promise<AutomaticSpeechRecognitionPipeline>;
 
-const MODEL_ID = 'Xenova/whisper-tiny';
+const MODEL_ID = 'Xenova/whisper-base';
 const LANGUAGE = 'polish';
+const MICROPHONE_CONSTRAINTS: MediaStreamConstraints = {
+  audio: {
+    autoGainControl: true,
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+  },
+};
 
 let transcriberPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null;
 
@@ -100,7 +108,7 @@ export function useWhisperTranscription() {
         await loadModel();
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia(MICROPHONE_CONSTRAINTS);
       const recorder = new MediaRecorder(stream);
 
       streamRef.current = stream;
@@ -179,3 +187,4 @@ function getErrorMessage(error: unknown, fallback: string) {
 
   return fallback;
 }
+

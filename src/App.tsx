@@ -94,8 +94,8 @@ export function App() {
         )}
 
         <p className="voiceNotice">
-          Model: {modelId}. Pierwsze ładowanie może chwilę potrwać, bo przeglądarka pobiera i
-          cache'uje lokalny model Whisper.
+          Model: {modelId}. Używa dokładniejszego trybu STT, redukcji echa, tłumienia szumu i
+          normalizacji głosu. Pierwsze ładowanie może potrwać dłużej.
         </p>
 
         {error && <p className="voiceError">{error}</p>}
@@ -152,7 +152,7 @@ function getVoiceButtonLabel(recordingState: string, loadState: string) {
 
 function getTranscriptPlaceholder(recordingState: string, loadState: string) {
   if (loadState === 'loading') {
-    return 'Ładuję model Whisper. Pierwszy raz może potrwać dłużej.';
+    return 'Ładuję dokładniejszy model Whisper. Pierwszy raz może potrwać dłużej.';
   }
 
   if (recordingState === 'recording') {
@@ -163,5 +163,6 @@ function getTranscriptPlaceholder(recordingState: string, loadState: string) {
     return 'Przepisuję nagranie na tekst...';
   }
 
-  return 'Kliknij „Nagraj”, powiedz coś po polsku, a XO przepisze nagranie lokalnym STT.';
+  return 'Kliknij „Nagraj”, powiedz coś po polsku, a XO przepisze nagranie dokładniejszym lokalnym STT.';
 }
+
