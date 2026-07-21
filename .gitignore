@@ -3,6 +3,7 @@ node_modules/
 dist/
 dist-ssr/
 target/
+src-tauri/gen/
 .env
 .env.*
 !.env.example

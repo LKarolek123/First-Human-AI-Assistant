@@ -36,6 +36,18 @@ OPENAI_MODEL=gpt-4.1-mini
 
 `OPENAI_MODEL` is optional.
 
+## Local Chat Memory
+
+XO stores conversations and messages in a local SQLite database owned by the Tauri app data
+directory. The frontend talks to the backend through Tauri commands:
+
+- `list_conversations`
+- `get_conversation_messages`
+- `send_chat_message`
+
+Every new model request includes recent messages from the current chat plus a compact memory slice
+from earlier chats, so a new conversation can still reuse context from previous conversations.
+
 ## Product Priority
 
 1. User wellbeing

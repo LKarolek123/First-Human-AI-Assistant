@@ -1,17 +1,12 @@
-import { type FormEvent, useState } from 'react';
-import { requestGptFeedback } from './ai/openaiFeedback';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import {
+  type ChatMessage,
+  type ConversationSummary,
+  getConversationMessages,
+  listConversations,
+  sendChatMessage,
+} from './ai/openaiFeedback';
 import { useWhisperTranscription } from './voice/useWhisperTranscription';
-
-const priorities = ['dobro użytkownika', 'prywatność', 'szybkość', 'wygoda', 'automatyzacja', 'wygląd'];
-
-const mvpAreas = [
-  { title: 'Desktop', items: ['tray icon', 'global shortcut', 'start z Windowsem'] },
-  { title: 'Voice First', items: ['STT po polsku', 'wake word', 'TTS', 'naturalna rozmowa'] },
-  { title: 'AI Agent', items: ['streaming', 'function calling', 'planowanie działań'] },
-  { title: 'Memory', items: ['SQLite', 'projekty', 'cele', 'transparentny panel pamięci'] },
-  { title: 'Computer', items: ['pliki', 'aplikacje', 'terminal za zgodą'] },
-  { title: 'Human First', items: ['nastrój', 'refleksje', 'małe kroki', 'wellbeing'] },
-];
 
 export function App() {
   const {
@@ -28,48 +23,119 @@ export function App() {
     stopRecording,
     transcript,
   } = useWhisperTranscription();
+
   const [typedPrompt, setTypedPrompt] = useState('');
-  const [feedback, setFeedback] = useState('');
-  const [feedbackError, setFeedbackError] = useState<string | null>(null);
-  const [feedbackState, setFeedbackState] = useState<'idle' | 'loading'>('idle');
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [chatState, setChatState] = useState<'idle' | 'loading'>('idle');
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
   const isBusy = isRecording || isTranscribing || loadState === 'loading';
   const promptText = typedPrompt.trim() || transcript.trim();
-  const canAskGpt = promptText.length > 0 && feedbackState !== 'loading';
+  const canSend = promptText.length > 0 && chatState !== 'loading';
+  const activeConversation = useMemo(
+    () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
+    [activeConversationId, conversations],
+  );
 
-  async function handleFeedbackSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  useEffect(() => {
+    let isMounted = true;
 
-    if (!promptText) {
-      setFeedbackError('Wpisz pytanie albo użyj transkrypcji z mikrofonu.');
+    listConversations()
+      .then((nextConversations) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setConversations(nextConversations);
+
+        if (nextConversations[0]) {
+          setActiveConversationId(nextConversations[0].id);
+        }
+      })
+      .catch((loadError) => setChatError(getErrorMessage(loadError)));
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeConversationId) {
+      setMessages([]);
       return;
     }
 
-    setFeedback('');
-    setFeedbackError(null);
-    setFeedbackState('loading');
+    let isMounted = true;
+
+    getConversationMessages(activeConversationId)
+      .then((nextMessages) => {
+        if (isMounted) {
+          setMessages(nextMessages);
+        }
+      })
+      .catch((loadError) => setChatError(getErrorMessage(loadError)));
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeConversationId]);
+
+  async function handleChatSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!promptText) {
+      setChatError('Wpisz wiadomosc albo uzyj transkrypcji z mikrofonu.');
+      return;
+    }
+
+    const input = promptText;
+
+    setTypedPrompt('');
+    setChatError(null);
+    setChatState('loading');
 
     try {
-      const nextFeedback = await requestGptFeedback({ input: promptText });
-      setFeedback(nextFeedback);
-    } catch (feedbackRequestError) {
-      setFeedbackError(getFeedbackErrorMessage(feedbackRequestError));
+      const response = await sendChatMessage({
+        conversationId: activeConversationId,
+        input,
+      });
+
+      setActiveConversationId(response.conversation.id);
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        response.user_message,
+        response.assistant_message,
+      ]);
+      setConversations((currentConversations) =>
+        upsertConversation(currentConversations, response.conversation),
+      );
+    } catch (sendError) {
+      setTypedPrompt(input);
+      setChatError(getErrorMessage(sendError));
     } finally {
-      setFeedbackState('idle');
+      setChatState('idle');
     }
+  }
+
+  function handleNewConversation() {
+    setActiveConversationId(null);
+    setMessages([]);
+    setTypedPrompt('');
+    setChatError(null);
   }
 
   function handleUseTranscript() {
     setTypedPrompt(transcript);
-    setFeedbackError(null);
+    setChatError(null);
   }
 
   function handleClearPrompt() {
     setTypedPrompt('');
-    setFeedback('');
-    setFeedbackError(null);
+    setChatError(null);
   }
 
   return (
@@ -79,74 +145,130 @@ export function App() {
           <p className="eyebrow">Human First AI</p>
           <h1>XO</h1>
           <p className="lead">
-            Desktopowy asystent AI, który ma być spokojnym, lokalnym centrum pracy, pamięci i
-            codziennego wsparcia.
+            Lokalny asystent z rozmowami, pamiecia miedzy watkami i spokojnym rytmem pracy.
           </p>
         </div>
 
         <div className="statusPanel" aria-label="Status MVP">
           <span className={isRecording ? 'pulse pulseActive' : 'pulse'} />
           <div>
-            <strong>{isRecording ? 'Nagrywam po polsku' : 'Typing + GPT'}</strong>
+            <strong>{isRecording ? 'Nagrywam po polsku' : 'Chat + pamiec'}</strong>
             <p>
               {isRecording
-                ? 'XO zapisuje dźwięk lokalnie i przygotuje transkrypcję.'
-                : 'Możesz wpisać pytanie ręcznie albo użyć transkrypcji jako promptu.'}
+                ? 'XO zapisuje dzwiek lokalnie i przygotuje transkrypcje.'
+                : 'Rozmowy sa zapisywane lokalnie w SQLite i dokladane do kontekstu modelu.'}
             </p>
           </div>
         </div>
       </section>
 
-      <section className="assistantPanel" aria-labelledby="assistant-heading">
-        <div className="assistantHeader">
-          <div>
-            <p className="eyebrow">AI Agent</p>
-            <h2 id="assistant-heading">Feedback GPT</h2>
-          </div>
-          <span className="languageBadge">typing</span>
-        </div>
-
-        <form className="promptForm" onSubmit={handleFeedbackSubmit}>
-          <label className="promptLabel" htmlFor="prompt">
-            Twoje pytanie
-          </label>
-          <textarea
-            id="prompt"
-            className="promptInput"
-            value={typedPrompt}
-            onChange={(event) => setTypedPrompt(event.target.value)}
-            placeholder="Wpisz, nad czym pracujesz albo czego potrzebujesz. Jeśli zostawisz pole puste, XO użyje ostatniej transkrypcji."
-            rows={6}
-          />
-          <div className="promptActions">
-            <button className="primaryButton" type="submit" disabled={!canAskGpt}>
-              {feedbackState === 'loading' ? 'Pytam GPT' : 'Poproś o feedback'}
-            </button>
-            <button
-              className="secondaryButton"
-              type="button"
-              onClick={handleUseTranscript}
-              disabled={!transcript || feedbackState === 'loading'}
-            >
-              Użyj transkrypcji
-            </button>
-            <button className="secondaryButton" type="button" onClick={handleClearPrompt}>
-              Wyczyść prompt
+      <section className="chatPanel" aria-labelledby="assistant-heading">
+        <aside className="conversationRail" aria-label="Rozmowy">
+          <div className="railHeader">
+            <div>
+              <p className="eyebrow">AI Agent</p>
+              <h2 id="assistant-heading">Chaty</h2>
+            </div>
+            <button className="iconButton" type="button" onClick={handleNewConversation} title="Nowy chat">
+              +
             </button>
           </div>
-        </form>
 
-        {feedbackError && <p className="voiceError">{feedbackError}</p>}
+          <button
+            className={!activeConversationId ? 'conversationItem conversationItemActive' : 'conversationItem'}
+            type="button"
+            onClick={handleNewConversation}
+          >
+            <span>Nowa rozmowa</span>
+            <small>Pierwsza wiadomosc utworzy chat</small>
+          </button>
 
-        <div className={feedbackState === 'loading' ? 'feedbackBox feedbackBoxBusy' : 'feedbackBox'} aria-live="polite">
-          {feedback ? (
-            <p>{feedback}</p>
-          ) : (
-            <p className="placeholderText">
-              Feedback pojawi się tutaj po wysłaniu pytania.
-            </p>
-          )}
-        </div>
+          <div className="conversationList">
+            {conversations.map((conversation) => (
+              <button
+                className={
+                  conversation.id === activeConversationId
+                    ? 'conversationItem conversationItemActive'
+                    : 'conversationItem'
+                }
+                key={conversation.id}
+                type="button"
+                onClick={() => setActiveConversationId(conversation.id)}
+              >
+                <span>{conversation.title}</span>
+                <small>{conversation.last_message ?? 'Brak wiadomosci'}</small>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <section className="assistantPanel" aria-label="Aktywna rozmowa">
+          <div className="assistantHeader">
+            <div>
+              <p className="eyebrow">AI Agent</p>
+              <h2>{activeConversation?.title ?? 'Nowa rozmowa'}</h2>
+            </div>
+            <span className="languageBadge">{chatState === 'loading' ? 'typing' : 'memory on'}</span>
+          </div>
+
+          <div className="messageList" aria-live="polite">
+            {messages.length > 0 ? (
+              messages.map((message) => (
+                <article
+                  className={message.role === 'user' ? 'messageBubble messageBubbleUser' : 'messageBubble'}
+                  key={message.id}
+                >
+                  <strong>{message.role === 'user' ? 'Ty' : 'XO'}</strong>
+                  <p>{message.content}</p>
+                </article>
+              ))
+            ) : (
+              <div className="emptyChat">
+                <strong>Nowy chat jest gotowy.</strong>
+                <p>Zapytaj o cos, a XO zapisze rozmowe i bedzie ja pamietal w kolejnych watkach.</p>
+              </div>
+            )}
+
+            {chatState === 'loading' && (
+              <article className="messageBubble messageBubbleBusy">
+                <strong>XO</strong>
+                <p>mysle...</p>
+              </article>
+            )}
+          </div>
+
+          {chatError && <p className="voiceError">{chatError}</p>}
+
+          <form className="promptForm" onSubmit={handleChatSubmit}>
+            <label className="promptLabel" htmlFor="prompt">
+              Twoja wiadomosc
+            </label>
+            <textarea
+              id="prompt"
+              className="promptInput"
+              value={typedPrompt}
+              onChange={(event) => setTypedPrompt(event.target.value)}
+              placeholder="Napisz do XO albo zostaw pole puste, zeby wyslac ostatnia transkrypcje."
+              rows={5}
+            />
+            <div className="promptActions">
+              <button className="primaryButton" type="submit" disabled={!canSend}>
+                {chatState === 'loading' ? 'Wysylam' : 'Wyslij'}
+              </button>
+              <button
+                className="secondaryButton"
+                type="button"
+                onClick={handleUseTranscript}
+                disabled={!transcript || chatState === 'loading'}
+              >
+                Uzyj transkrypcji
+              </button>
+              <button className="secondaryButton" type="button" onClick={handleClearPrompt}>
+                Wyczysc prompt
+              </button>
+            </div>
+          </form>
+        </section>
       </section>
 
       <section className="voicePanel" aria-labelledby="voice-heading">
@@ -175,10 +297,10 @@ export function App() {
             onClick={loadModel}
             disabled={!isSupported || loadState === 'loading' || loadState === 'ready'}
           >
-            {loadState === 'ready' ? 'Model gotowy' : 'Załaduj model'}
+            {loadState === 'ready' ? 'Model gotowy' : 'Zaladuj model'}
           </button>
           <button className="secondaryButton" type="button" onClick={resetTranscript}>
-            Wyczyść
+            Wyczysc
           </button>
         </div>
 
@@ -194,13 +316,13 @@ export function App() {
 
         {!isSupported && (
           <p className="voiceNotice">
-            Ta przeglądarka nie udostępnia nagrywania audio przez MediaRecorder.
+            Ta przegladarka nie udostepnia nagrywania audio przez MediaRecorder.
           </p>
         )}
 
         <p className="voiceNotice">
-          Model: {modelId}. Jeśli transkrypcja pokazuje „muzyka”, zwykle oznacza to za cichy głos,
-          tło z głośników albo brak wyraźnej mowy w nagraniu.
+          Model: {modelId}. Jesli transkrypcja pokazuje przypadkowy tekst, zwykle oznacza to za
+          cichy glos, tlo z glosnikow albo brak wyraznej mowy w nagraniu.
         </p>
 
         {error && <p className="voiceError">{error}</p>}
@@ -213,35 +335,24 @@ export function App() {
           )}
         </div>
       </section>
-
-      <section className="priorityBand" aria-labelledby="priority-heading">
-        <h2 id="priority-heading">Priorytet produktu</h2>
-        <ol>
-          {priorities.map((priority) => (
-            <li key={priority}>{priority}</li>
-          ))}
-        </ol>
-      </section>
-
-      <section className="moduleGrid" aria-label="Moduły MVP">
-        {mvpAreas.map((area) => (
-          <article className="moduleCard" key={area.title}>
-            <h2>{area.title}</h2>
-            <ul>
-              {area.items.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </article>
-        ))}
-      </section>
     </main>
+  );
+}
+
+function upsertConversation(
+  conversations: ConversationSummary[],
+  nextConversation: ConversationSummary,
+) {
+  const withoutCurrent = conversations.filter((conversation) => conversation.id !== nextConversation.id);
+
+  return [nextConversation, ...withoutCurrent].sort(
+    (left, right) => right.updated_at - left.updated_at,
   );
 }
 
 function getVoiceButtonLabel(recordingState: string, loadState: string) {
   if (loadState === 'loading') {
-    return 'Ładuję';
+    return 'Laduje';
   }
 
   if (recordingState === 'recording') {
@@ -249,7 +360,7 @@ function getVoiceButtonLabel(recordingState: string, loadState: string) {
   }
 
   if (recordingState === 'transcribing') {
-    return 'Przepisuję';
+    return 'Przepisuje';
   }
 
   return 'Nagraj';
@@ -257,18 +368,18 @@ function getVoiceButtonLabel(recordingState: string, loadState: string) {
 
 function getTranscriptPlaceholder(recordingState: string, loadState: string) {
   if (loadState === 'loading') {
-    return 'Ładuję model Whisper. Pierwszy raz może potrwać dłużej.';
+    return 'Laduje model Whisper. Pierwszy raz moze potrwac dluzej.';
   }
 
   if (recordingState === 'recording') {
-    return 'Mów po polsku. Obserwuj pasek mikrofonu i kliknij „Zatrzymaj”, kiedy skończysz.';
+    return 'Mow po polsku. Obserwuj pasek mikrofonu i kliknij Zatrzymaj, kiedy skonczysz.';
   }
 
   if (recordingState === 'transcribing') {
-    return 'Przepisuję nagranie na tekst...';
+    return 'Przepisuje nagranie na tekst...';
   }
 
-  return 'Kliknij „Nagraj”, powiedz coś po polsku, a XO przepisze nagranie lokalnym STT.';
+  return 'Kliknij Nagraj, powiedz cos po polsku, a XO przepisze nagranie lokalnym STT.';
 }
 
 function getLevelLabel(inputLevel: number, peakInputLevel: number) {
@@ -281,16 +392,20 @@ function getLevelLabel(inputLevel: number, peakInputLevel: number) {
   }
 
   if (inputLevel > 0.85) {
-    return 'za głośno';
+    return 'za glosno';
   }
 
   return 'OK';
 }
 
-function getFeedbackErrorMessage(error: unknown) {
+function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
   }
 
-  return 'Nie udało się pobrać feedbacku z GPT.';
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  return 'Cos poszlo nie tak.';
 }
