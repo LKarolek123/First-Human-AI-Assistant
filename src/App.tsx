@@ -6,7 +6,58 @@ import {
   listConversations,
   sendChatMessage,
 } from './ai/openaiFeedback';
+import {
+  type CalendarEventSummary,
+  type GmailMessageSummary,
+  type PluginConnection,
+  beginGmailConnect,
+  beginGoogleCalendarConnect,
+  disconnectGmail,
+  disconnectGoogleCalendar,
+  finishGmailConnect,
+  finishGoogleCalendarConnect,
+  getGoogleCalendarConfig,
+  listGmailRecentMessages,
+  listGoogleCalendarEvents,
+  listPluginConnections,
+  saveGoogleCalendarClientId,
+} from './integrations/plugins';
 import { useWhisperTranscription } from './voice/useWhisperTranscription';
+
+const memoryAspects = [
+  {
+    title: 'Fakty o uzytkowniku',
+    items: [
+      'stale preferencje i zasady pracy',
+      'projekty, role i dlugoterminowe cele',
+      'osoby, organizacje i wazne relacje',
+    ],
+  },
+  {
+    title: 'Pamiec rozmow',
+    items: [
+      'najwazniejsze ustalenia z poprzednich chatow',
+      'decyzje, ktore maja wplyw na kolejne rozmowy',
+      'kontekst, ktory warto streszczac zamiast trzymac w surowej historii',
+    ],
+  },
+  {
+    title: 'Pamiec z narzedzi',
+    items: [
+      'wnioski z kalendarza, nie pelna kopia wydarzen',
+      'priorytety z Gmaila, nie cala skrzynka',
+      'alerty i rekomendacje z jasnym zrodlem',
+    ],
+  },
+  {
+    title: 'Kontrola i prywatnosc',
+    items: [
+      'kazdy zapis pamieci powinien miec zrodlo i czas',
+      'uzytkownik powinien moc podejrzec, edytowac i usunac wpis',
+      'dane wrazliwe wymagaja ostrozniejszych kategorii i zgody',
+    ],
+  },
+];
 
 export function App() {
   const {
@@ -30,6 +81,19 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
   const [chatState, setChatState] = useState<'idle' | 'loading'>('idle');
+  const [pluginConnections, setPluginConnections] = useState<PluginConnection[]>([]);
+  const [pluginError, setPluginError] = useState<string | null>(null);
+  const [pluginState, setPluginState] = useState<'idle' | 'savingConfig' | 'connecting' | 'loadingEvents' | 'loadingMail'>('idle');
+  const [connectingPlugin, setConnectingPlugin] = useState<'calendar' | 'gmail' | null>(null);
+  const [pluginNotice, setPluginNotice] = useState<string | null>(null);
+  const [lastAuthUrl, setLastAuthUrl] = useState<string | null>(null);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEventSummary[]>([]);
+  const [gmailMessages, setGmailMessages] = useState<GmailMessageSummary[]>([]);
+  const [googleClientId, setGoogleClientId] = useState('');
+  const [googleClientSecret, setGoogleClientSecret] = useState('');
+  const [hasGoogleClientId, setHasGoogleClientId] = useState(false);
+  const [hasGoogleClientSecret, setHasGoogleClientSecret] = useState(false);
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState<'chat' | 'memory'>('chat');
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
@@ -40,9 +104,37 @@ export function App() {
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [activeConversationId, conversations],
   );
+  const googleCalendarConnection = useMemo(
+    () => pluginConnections.find((connection) => connection.provider === 'google_calendar') ?? null,
+    [pluginConnections],
+  );
+  const gmailConnection = useMemo(
+    () => pluginConnections.find((connection) => connection.provider === 'gmail') ?? null,
+    [pluginConnections],
+  );
 
   useEffect(() => {
     let isMounted = true;
+
+    listPluginConnections()
+      .then((connections) => {
+        if (isMounted) {
+          setPluginConnections(connections);
+        }
+      })
+      .catch((loadError) => setPluginError(getErrorMessage(loadError)));
+
+    getGoogleCalendarConfig()
+      .then((config) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setGoogleClientId(config.client_id ?? '');
+        setHasGoogleClientId(config.has_client_id);
+        setHasGoogleClientSecret(config.has_client_secret);
+      })
+      .catch((loadError) => setPluginError(getErrorMessage(loadError)));
 
     listConversations()
       .then((nextConversations) => {
@@ -62,6 +154,41 @@ export function App() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (pluginState !== 'connecting' || !connectingPlugin) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      const finishConnect =
+        connectingPlugin === 'gmail' ? finishGmailConnect : finishGoogleCalendarConnect;
+
+      finishConnect()
+        .then((progress) => {
+          if (progress.status !== 'connected' || !progress.connection) {
+            return;
+          }
+
+          const connection = progress.connection;
+          setPluginConnections((connections) => upsertPluginConnection(connections, connection));
+          setPluginError(null);
+          setPluginNotice('Polaczenie zakonczone.');
+          setLastAuthUrl(null);
+          setPluginState('idle');
+          setConnectingPlugin(null);
+          window.clearInterval(intervalId);
+        })
+        .catch((connectError) => {
+          setPluginError(getErrorMessage(connectError));
+          setPluginState('idle');
+          setConnectingPlugin(null);
+          window.clearInterval(intervalId);
+        });
+    }, 1200);
+
+    return () => window.clearInterval(intervalId);
+  }, [connectingPlugin, pluginState]);
 
   useEffect(() => {
     if (!activeConversationId) {
@@ -138,6 +265,138 @@ export function App() {
     setChatError(null);
   }
 
+  async function handleConnectGoogleCalendar() {
+    setPluginError(null);
+    setPluginNotice(null);
+    setLastAuthUrl(null);
+    setPluginState('connecting');
+    setConnectingPlugin('calendar');
+
+    try {
+      const start = await beginGoogleCalendarConnect();
+      setLastAuthUrl(start.auth_url);
+      setPluginNotice(
+        start.opened_browser
+          ? 'Otworzylem logowanie Google w przegladarce. Po zgodzie wroc do XO.'
+          : `Nie udalo sie automatycznie otworzyc przegladarki: ${start.open_error ?? 'brak szczegolow'}`,
+      );
+    } catch (connectError) {
+      setPluginError(getErrorMessage(connectError));
+      setPluginState('idle');
+      setConnectingPlugin(null);
+    }
+  }
+
+  async function handleConnectGmail() {
+    setPluginError(null);
+    setPluginNotice(null);
+    setLastAuthUrl(null);
+    setPluginState('connecting');
+    setConnectingPlugin('gmail');
+
+    try {
+      const start = await beginGmailConnect();
+      setLastAuthUrl(start.auth_url);
+      setPluginNotice(
+        start.opened_browser
+          ? 'Otworzylem logowanie Google w przegladarce. Po zgodzie wroc do XO.'
+          : `Nie udalo sie automatycznie otworzyc przegladarki: ${start.open_error ?? 'brak szczegolow'}`,
+      );
+    } catch (connectError) {
+      setPluginError(getErrorMessage(connectError));
+      setPluginState('idle');
+      setConnectingPlugin(null);
+    }
+  }
+
+  async function handleSaveGoogleCalendarClientId() {
+    setPluginError(null);
+    setPluginNotice(null);
+    setPluginState('savingConfig');
+
+    try {
+      const config = await saveGoogleCalendarClientId(googleClientId, googleClientSecret);
+      setGoogleClientId(config.client_id ?? '');
+      setGoogleClientSecret('');
+      setHasGoogleClientId(config.has_client_id);
+      setHasGoogleClientSecret(config.has_client_secret);
+      setPluginNotice(
+        config.has_client_secret
+          ? 'Zapisalem Desktop Client ID i Client Secret.'
+          : 'Zapisalem Desktop Client ID. Jesli Google nadal zwroci client_secret is missing, wklej tez Desktop Client Secret.',
+      );
+    } catch (saveError) {
+      setPluginError(getErrorMessage(saveError));
+    } finally {
+      setPluginState('idle');
+    }
+  }
+
+  async function handleCopyAuthUrl() {
+    if (!lastAuthUrl) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(lastAuthUrl);
+      setPluginNotice('Skopiowalem link logowania. Wklej go w przegladarce.');
+    } catch {
+      setPluginError('Nie udalo sie skopiowac linku logowania.');
+    }
+  }
+
+  async function handleDisconnectGoogleCalendar() {
+    setPluginError(null);
+
+    try {
+      const connection = await disconnectGoogleCalendar();
+      setPluginConnections((connections) => upsertPluginConnection(connections, connection));
+      setCalendarEvents([]);
+    } catch (disconnectError) {
+      setPluginError(getErrorMessage(disconnectError));
+    }
+  }
+
+  async function handleDisconnectGmail() {
+    setPluginError(null);
+
+    try {
+      const connection = await disconnectGmail();
+      setPluginConnections((connections) => upsertPluginConnection(connections, connection));
+      setGmailMessages([]);
+    } catch (disconnectError) {
+      setPluginError(getErrorMessage(disconnectError));
+    }
+  }
+
+  async function handleLoadCalendarEvents() {
+    setPluginError(null);
+    setPluginState('loadingEvents');
+
+    try {
+      const events = await listGoogleCalendarEvents(7);
+      setCalendarEvents(events);
+    } catch (loadError) {
+      setPluginError(getErrorMessage(loadError));
+    } finally {
+      setPluginState('idle');
+    }
+  }
+
+  async function handleLoadGmailMessages() {
+    setPluginError(null);
+    setPluginState('loadingMail');
+
+    try {
+      const messages = await listGmailRecentMessages();
+      setGmailMessages(messages);
+    } catch (loadError) {
+      setPluginError(getErrorMessage(loadError));
+    } finally {
+      setPluginState('idle');
+    }
+  }
+
   return (
     <main className="shell">
       <section className="hero">
@@ -164,45 +423,235 @@ export function App() {
 
       <section className="chatPanel" aria-labelledby="assistant-heading">
         <aside className="conversationRail" aria-label="Rozmowy">
+          <div className="pluginsPanel" aria-label="Wtyczki">
+            <div className="railHeader">
+              <div>
+                <p className="eyebrow">Integracje</p>
+                <h2>Wtyczki</h2>
+              </div>
+            </div>
+
+            <article className="pluginCard">
+              <div>
+                <strong>Google Calendar</strong>
+                <p>
+                  {googleCalendarConnection?.connected
+                    ? googleCalendarConnection.account_email ?? 'Polaczono konto Google'
+                    : 'Najpierw wklej Desktop OAuth Client ID, potem zaloguj sie przez Google.'}
+                </p>
+              </div>
+
+              {!googleCalendarConnection?.connected && (
+                <label className="pluginConfigField">
+                  <span>Desktop OAuth Client ID</span>
+                  <input
+                    value={googleClientId}
+                    onChange={(event) => {
+                      setGoogleClientId(event.target.value);
+                      setHasGoogleClientId(false);
+                    }}
+                    placeholder="...apps.googleusercontent.com"
+                  />
+                </label>
+              )}
+
+              {!googleCalendarConnection?.connected && (
+                <label className="pluginConfigField">
+                  <span>Desktop Client Secret</span>
+                  <input
+                    value={googleClientSecret}
+                    onChange={(event) => setGoogleClientSecret(event.target.value)}
+                    placeholder={hasGoogleClientSecret ? 'zapisany w systemowym sejfie' : 'wklej z Google Cloud / JSON'}
+                    type="password"
+                  />
+                  <small>
+                    {hasGoogleClientSecret
+                      ? 'Client Secret jest juz zapisany lokalnie.'
+                      : 'Nie trafia do frontendu po zapisaniu; backend trzyma go w systemowym sejfie.'}
+                  </small>
+                </label>
+              )}
+
+              <div className="pluginActions">
+                {googleCalendarConnection?.connected ? (
+                  <>
+                    <button
+                      className="secondaryButton"
+                      type="button"
+                      onClick={handleLoadCalendarEvents}
+                      disabled={pluginState !== 'idle'}
+                    >
+                      {pluginState === 'loadingEvents' ? 'Czytam' : 'Sprawdz'}
+                    </button>
+                    <button className="secondaryButton" type="button" onClick={handleDisconnectGoogleCalendar}>
+                      Odlacz
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      className="secondaryButton"
+                      type="button"
+                      onClick={handleSaveGoogleCalendarClientId}
+                      disabled={pluginState !== 'idle' || !googleClientId.trim()}
+                    >
+                      {pluginState === 'savingConfig' ? 'Zapisuje' : 'Zapisz'}
+                    </button>
+                    <button
+                      className="primaryButton"
+                      type="button"
+                      onClick={handleConnectGoogleCalendar}
+                      disabled={pluginState !== 'idle' || !hasGoogleClientId}
+                    >
+                      {pluginState === 'connecting' && connectingPlugin === 'calendar' ? 'Lacze' : 'Polacz'}
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {calendarEvents.length > 0 && (
+                <div className="pluginEvents">
+                  {calendarEvents.slice(0, 3).map((event) => (
+                    <p key={event.id}>
+                      <strong>{event.summary}</strong>
+                      <span>{event.start ?? 'bez daty'}</span>
+                    </p>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="pluginCard">
+              <div>
+                <strong>Gmail</strong>
+                <p>
+                  {gmailConnection?.connected
+                    ? gmailConnection.account_email ?? 'Polaczono Gmail'
+                    : hasGoogleClientId
+                      ? 'Odczyt 20 ostatnich wiadomosci, wlacznie ze spamem i koszem.'
+                      : 'Najpierw zapisz Google OAuth Client ID w karcie Calendar.'}
+                </p>
+              </div>
+
+              <div className="pluginActions">
+                {gmailConnection?.connected ? (
+                  <>
+                    <button
+                      className="secondaryButton"
+                      type="button"
+                      onClick={handleLoadGmailMessages}
+                      disabled={pluginState !== 'idle'}
+                    >
+                      {pluginState === 'loadingMail' ? 'Czytam' : 'Sprawdz'}
+                    </button>
+                    <button className="secondaryButton" type="button" onClick={handleDisconnectGmail}>
+                      Odlacz
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="primaryButton"
+                    type="button"
+                    onClick={handleConnectGmail}
+                    disabled={pluginState !== 'idle' || !hasGoogleClientId}
+                  >
+                    {pluginState === 'connecting' && connectingPlugin === 'gmail' ? 'Lacze' : 'Polacz'}
+                  </button>
+                )}
+              </div>
+
+              {gmailMessages.length > 0 && (
+                <div className="pluginEvents">
+                  {gmailMessages.slice(0, 4).map((message) => (
+                    <p key={message.id}>
+                      <strong>{message.subject ?? 'Bez tematu'}</strong>
+                      <span>{message.from ?? 'nieznany nadawca'}</span>
+                    </p>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            {(pluginNotice || lastAuthUrl) && (
+              <div className="pluginNotice">
+                {pluginNotice && <p>{pluginNotice}</p>}
+                {lastAuthUrl && (
+                  <div className="pluginActions">
+                    <a href={lastAuthUrl} target="_blank" rel="noreferrer">
+                      Otworz logowanie
+                    </a>
+                    <button className="secondaryButton" type="button" onClick={handleCopyAuthUrl}>
+                      Kopiuj link
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {pluginError && <p className="pluginError">{pluginError}</p>}
+          </div>
+
           <div className="railHeader">
             <div>
               <p className="eyebrow">AI Agent</p>
-              <h2 id="assistant-heading">Chaty</h2>
+              <h2 id="assistant-heading">Obszar pracy</h2>
             </div>
             <button className="iconButton" type="button" onClick={handleNewConversation} title="Nowy chat">
               +
             </button>
           </div>
 
-          <button
-            className={!activeConversationId ? 'conversationItem conversationItemActive' : 'conversationItem'}
-            type="button"
-            onClick={handleNewConversation}
-          >
-            <span>Nowa rozmowa</span>
-            <small>Pierwsza wiadomosc utworzy chat</small>
-          </button>
-
-          <div className="conversationList">
-            {conversations.map((conversation) => (
-              <button
-                className={
-                  conversation.id === activeConversationId
-                    ? 'conversationItem conversationItemActive'
-                    : 'conversationItem'
-                }
-                key={conversation.id}
-                type="button"
-                onClick={() => setActiveConversationId(conversation.id)}
-              >
-                <span>{conversation.title}</span>
-                <small>{conversation.last_message ?? 'Brak wiadomosci'}</small>
-              </button>
-            ))}
+          <div className="workspaceTabs" aria-label="Widoki">
+            <button
+              className={activeWorkspaceView === 'chat' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
+              type="button"
+              onClick={() => setActiveWorkspaceView('chat')}
+            >
+              Chaty
+            </button>
+            <button
+              className={activeWorkspaceView === 'memory' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
+              type="button"
+              onClick={() => setActiveWorkspaceView('memory')}
+            >
+              Pamiec
+            </button>
           </div>
+
+          {activeWorkspaceView === 'chat' && (
+            <>
+              <button
+                className={!activeConversationId ? 'conversationItem conversationItemActive' : 'conversationItem'}
+                type="button"
+                onClick={handleNewConversation}
+              >
+                <span>Nowa rozmowa</span>
+                <small>Pierwsza wiadomosc utworzy chat</small>
+              </button>
+
+              <div className="conversationList">
+                {conversations.map((conversation) => (
+                  <button
+                    className={
+                      conversation.id === activeConversationId
+                        ? 'conversationItem conversationItemActive'
+                        : 'conversationItem'
+                    }
+                    key={conversation.id}
+                    type="button"
+                    onClick={() => setActiveConversationId(conversation.id)}
+                  >
+                    <span>{conversation.title}</span>
+                    <small>{conversation.last_message ?? 'Brak wiadomosci'}</small>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </aside>
 
-        <section className="assistantPanel" aria-label="Aktywna rozmowa">
+        {activeWorkspaceView === 'chat' ? (
+          <section className="assistantPanel" aria-label="Aktywna rozmowa">
           <div className="assistantHeader">
             <div>
               <p className="eyebrow">AI Agent</p>
@@ -268,7 +717,31 @@ export function App() {
               </button>
             </div>
           </form>
-        </section>
+          </section>
+        ) : (
+          <section className="assistantPanel" aria-label="Pamiec XO">
+            <div className="assistantHeader">
+              <div>
+                <p className="eyebrow">Memory</p>
+                <h2>Pamiec XO</h2>
+              </div>
+              <span className="languageBadge">draft</span>
+            </div>
+
+            <div className="memoryPanel">
+              {memoryAspects.map((aspect) => (
+                <article className="memorySection" key={aspect.title}>
+                  <h3>{aspect.title}</h3>
+                  <ul>
+                    {aspect.items.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
       </section>
 
       <section className="voicePanel" aria-labelledby="voice-heading">
@@ -348,6 +821,15 @@ function upsertConversation(
   return [nextConversation, ...withoutCurrent].sort(
     (left, right) => right.updated_at - left.updated_at,
   );
+}
+
+function upsertPluginConnection(
+  connections: PluginConnection[],
+  nextConnection: PluginConnection,
+) {
+  const withoutCurrent = connections.filter((connection) => connection.provider !== nextConnection.provider);
+
+  return [nextConnection, ...withoutCurrent];
 }
 
 function getVoiceButtonLabel(recordingState: string, loadState: string) {

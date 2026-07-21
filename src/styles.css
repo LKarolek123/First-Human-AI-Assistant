@@ -128,7 +128,7 @@ h1 {
 .conversationRail {
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 18px;
   min-width: 0;
 }
 
@@ -163,6 +163,149 @@ h1 {
 .conversationList {
   display: grid;
   gap: 8px;
+}
+
+.workspaceTabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 4px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.workspaceTab {
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #56625d;
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.workspaceTabActive {
+  background: #eef6f1;
+  color: #17201d;
+}
+
+.pluginsPanel {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #d8d4cb;
+}
+
+.pluginCard {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.pluginCard p {
+  margin: 5px 0 0;
+  color: #66736d;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.pluginActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pluginConfigField {
+  display: grid;
+  gap: 6px;
+}
+
+.pluginConfigField span {
+  color: #25312d;
+  font-size: 0.85rem;
+  font-weight: 750;
+}
+
+.pluginConfigField small {
+  color: #66736d;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.pluginConfigField input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #c8cec9;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #25312d;
+  font-size: 0.88rem;
+}
+
+.pluginConfigField input:focus {
+  border-color: #2f8f65;
+  outline: 3px solid rgb(47 143 101 / 16%);
+}
+
+.pluginEvents {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #e4e0d7;
+}
+
+.pluginEvents p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.pluginEvents strong,
+.pluginEvents span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pluginEvents span {
+  color: #66736d;
+  font-size: 0.82rem;
+}
+
+.pluginError {
+  margin: 0;
+  color: #8f2532;
+  font-size: 0.9rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.pluginNotice {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #cad7d1;
+  border-radius: 8px;
+  background: #eef6f1;
+  color: #253731;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.pluginNotice p {
+  margin: 0;
+}
+
+.pluginNotice a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: #1f6747;
+  font-weight: 750;
 }
 
 .conversationItem {
@@ -316,6 +459,31 @@ h1 {
 .messageBubble p,
 .emptyChat p {
   margin-bottom: 0;
+}
+
+.memoryPanel {
+  display: grid;
+  gap: 18px;
+}
+
+.memorySection {
+  padding-bottom: 18px;
+  border-bottom: 1px solid #d8d4cb;
+}
+
+.memorySection h3 {
+  margin: 0 0 10px;
+  color: #17201d;
+  font-size: 1.05rem;
+}
+
+.memorySection ul {
+  display: grid;
+  gap: 8px;
+  padding-left: 20px;
+  margin: 0;
+  color: #46524e;
+  line-height: 1.5;
 }
 
 .voiceHeader {

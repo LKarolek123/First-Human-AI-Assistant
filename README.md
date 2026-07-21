@@ -48,6 +48,49 @@ directory. The frontend talks to the backend through Tauri commands:
 Every new model request includes recent messages from the current chat plus a compact memory slice
 from earlier chats, so a new conversation can still reuse context from previous conversations.
 
+## Google Calendar Plugin
+
+The first plugin backend uses Google OAuth for installed desktop apps with PKCE and a local
+`127.0.0.1` callback. In normal use, paste a Google OAuth Desktop Client ID and Desktop Client
+Secret into the Google Calendar plugin card and click `Zapisz`, then `Polacz`.
+
+For development, this environment variable is still supported as a fallback:
+
+```bash
+GOOGLE_OAUTH_CLIENT_ID=your_google_desktop_oauth_client_id
+GOOGLE_OAUTH_CLIENT_SECRET=your_google_desktop_oauth_client_secret
+```
+
+This is not a Google API key. Private calendar access requires OAuth, so the user still signs in
+with Google and grants consent in the browser. The client secret is stored through the operating
+system credential store when entered in the app.
+
+Requested scopes are intentionally narrow for the first version:
+
+- `openid`
+- `email`
+- `profile`
+- `https://www.googleapis.com/auth/calendar.events.readonly`
+
+The frontend only sees connection status, account email, and calendar event summaries. OAuth tokens
+are stored through the operating system credential store via the Tauri backend, not in the React
+bundle and not in the SQLite chat database.
+
+## Gmail Plugin
+
+Gmail uses the same Google OAuth Desktop Client ID configuration, but it is connected as a separate
+plugin with separate stored tokens. The first version is read-only and requests:
+
+- `openid`
+- `email`
+- `profile`
+- `https://www.googleapis.com/auth/gmail.readonly`
+
+The Gmail backend only lists up to 20 recent messages and requests metadata/snippets, including spam
+and trash via `includeSpamTrash=true`. It does not send, delete, archive, label, or mark messages as
+read. Daily scans, priority classification, and urgent notifications should build on this limited
+read-only command rather than broad mailbox access.
+
 ## Product Priority
 
 1. User wellbeing
