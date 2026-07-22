@@ -2,9 +2,15 @@ import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   type ChatMessage,
   type ConversationSummary,
+  type MemoryCategory,
+  type MemoryRecord,
+  createMemoryRecord,
+  deleteMemoryRecord,
   getConversationMessages,
   listConversations,
+  listMemoryRecords,
   sendChatMessage,
+  updateMemoryRecord,
 } from './ai/openaiFeedback';
 import {
   type CalendarEventSummary,
@@ -52,11 +58,20 @@ const memoryAspects = [
   {
     title: 'Kontrola i prywatnosc',
     items: [
-      'kazdy zapis pamieci powinien miec zrodlo i czas',
+      'kazdy zapis pamieci powinien byc widoczny i edytowalny',
       'uzytkownik powinien moc podejrzec, edytowac i usunac wpis',
       'dane wrazliwe wymagaja ostrozniejszych kategorii i zgody',
     ],
   },
+];
+
+const memoryCategories: Array<{ value: MemoryCategory; label: string }> = [
+  { value: 'user_fact', label: 'Fakt o uzytkowniku' },
+  { value: 'preference', label: 'Preferencja' },
+  { value: 'project', label: 'Projekt' },
+  { value: 'decision', label: 'Decyzja' },
+  { value: 'tool_note', label: 'Wniosek z narzedzia' },
+  { value: 'privacy', label: 'Prywatnosc' },
 ];
 
 export function App() {
@@ -94,6 +109,13 @@ export function App() {
   const [hasGoogleClientId, setHasGoogleClientId] = useState(false);
   const [hasGoogleClientSecret, setHasGoogleClientSecret] = useState(false);
   const [activeWorkspaceView, setActiveWorkspaceView] = useState<'chat' | 'memory'>('chat');
+  const [memoryRecords, setMemoryRecords] = useState<MemoryRecord[]>([]);
+  const [memoryCategory, setMemoryCategory] = useState<MemoryCategory>('preference');
+  const [memoryContent, setMemoryContent] = useState('');
+  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryNotice, setMemoryNotice] = useState<string | null>(null);
+  const [memoryState, setMemoryState] = useState<'idle' | 'saving' | 'deleting'>('idle');
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
@@ -149,6 +171,14 @@ export function App() {
         }
       })
       .catch((loadError) => setChatError(getErrorMessage(loadError)));
+
+    listMemoryRecords()
+      .then((nextMemoryRecords) => {
+        if (isMounted) {
+          setMemoryRecords(nextMemoryRecords);
+        }
+      })
+      .catch((loadError) => setMemoryError(getErrorMessage(loadError)));
 
     return () => {
       isMounted = false;
@@ -395,6 +425,68 @@ export function App() {
     } finally {
       setPluginState('idle');
     }
+  }
+
+  async function handleMemorySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!memoryContent.trim()) {
+      setMemoryError('Wpis pamieci nie moze byc pusty.');
+      return;
+    }
+
+    setMemoryError(null);
+    setMemoryNotice(null);
+    setMemoryState('saving');
+
+    try {
+      const savedRecord = editingMemoryId
+        ? await updateMemoryRecord(editingMemoryId, memoryCategory, memoryContent)
+        : await createMemoryRecord(memoryCategory, memoryContent);
+
+      setMemoryRecords((records) => upsertMemoryRecord(records, savedRecord));
+      resetMemoryForm();
+      setMemoryNotice(editingMemoryId ? 'Zaktualizowalem wpis pamieci.' : 'Dodano wpis pamieci.');
+    } catch (saveError) {
+      setMemoryError(getErrorMessage(saveError));
+    } finally {
+      setMemoryState('idle');
+    }
+  }
+
+  async function handleDeleteMemoryRecord(id: string) {
+    setMemoryError(null);
+    setMemoryNotice(null);
+    setMemoryState('deleting');
+
+    try {
+      await deleteMemoryRecord(id);
+      setMemoryRecords((records) => records.filter((record) => record.id !== id));
+
+      if (editingMemoryId === id) {
+        resetMemoryForm();
+      }
+
+      setMemoryNotice('Usunieto wpis pamieci.');
+    } catch (deleteError) {
+      setMemoryError(getErrorMessage(deleteError));
+    } finally {
+      setMemoryState('idle');
+    }
+  }
+
+  function handleEditMemoryRecord(record: MemoryRecord) {
+    setEditingMemoryId(record.id);
+    setMemoryCategory(record.category);
+    setMemoryContent(record.content);
+    setMemoryError(null);
+    setMemoryNotice(null);
+  }
+
+  function resetMemoryForm() {
+    setEditingMemoryId(null);
+    setMemoryCategory('preference');
+    setMemoryContent('');
   }
 
   return (
@@ -725,10 +817,93 @@ export function App() {
                 <p className="eyebrow">Memory</p>
                 <h2>Pamiec XO</h2>
               </div>
-              <span className="languageBadge">draft</span>
+              <span className="languageBadge">{memoryRecords.length} wpisow</span>
             </div>
 
             <div className="memoryPanel">
+              <form className="memoryEditor" onSubmit={handleMemorySubmit}>
+                <label className="memoryField">
+                  <span>Kategoria</span>
+                  <select
+                    value={memoryCategory}
+                    onChange={(event) => setMemoryCategory(event.target.value as MemoryCategory)}
+                  >
+                    {memoryCategories.map((category) => (
+                      <option key={category.value} value={category.value}>
+                        {category.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="memoryField">
+                  <span>Co XO ma pamietac</span>
+                  <textarea
+                    value={memoryContent}
+                    onChange={(event) => setMemoryContent(event.target.value)}
+                    placeholder="Np. Uzytkownik woli konkretne odpowiedzi po polsku i chce aktualizacji Features.md przy zmianach funkcji."
+                    rows={4}
+                  />
+                </label>
+
+                <div className="promptActions">
+                  <button className="primaryButton" type="submit" disabled={memoryState !== 'idle'}>
+                    {memoryState === 'saving'
+                      ? 'Zapisuje'
+                      : editingMemoryId
+                        ? 'Zapisz zmiany'
+                        : 'Dodaj pamiec'}
+                  </button>
+                  {editingMemoryId && (
+                    <button className="secondaryButton" type="button" onClick={resetMemoryForm}>
+                      Anuluj edycje
+                    </button>
+                  )}
+                </div>
+              </form>
+
+              {memoryNotice && <p className="memoryNotice">{memoryNotice}</p>}
+              {memoryError && <p className="voiceError">{memoryError}</p>}
+
+              <div className="memoryList" aria-live="polite">
+                {memoryRecords.length > 0 ? (
+                  memoryRecords.map((record) => (
+                    <article className="memoryRecord" key={record.id}>
+                      <div>
+                        <strong>{getMemoryCategoryLabel(record.category)}</strong>
+                        <p>{record.content}</p>
+                        <small>
+                          {getMemorySourceLabel(record)} | aktualizacja: {formatDateTime(record.updated_at)}
+                        </small>
+                      </div>
+                      <div className="memoryRecordActions">
+                        <button
+                          className="secondaryButton"
+                          type="button"
+                          onClick={() => handleEditMemoryRecord(record)}
+                          disabled={memoryState !== 'idle'}
+                        >
+                          Edytuj
+                        </button>
+                        <button
+                          className="secondaryButton dangerButton"
+                          type="button"
+                          onClick={() => handleDeleteMemoryRecord(record.id)}
+                          disabled={memoryState !== 'idle'}
+                        >
+                          Usun
+                        </button>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="emptyChat">
+                    <strong>Brak jawnych wpisow pamieci.</strong>
+                    <p>Dodaj pierwsza rzecz, ktora XO ma stabilnie pamietac w kolejnych rozmowach.</p>
+                  </div>
+                )}
+              </div>
+
               {memoryAspects.map((aspect) => (
                 <article className="memorySection" key={aspect.title}>
                   <h3>{aspect.title}</h3>
@@ -830,6 +1005,41 @@ function upsertPluginConnection(
   const withoutCurrent = connections.filter((connection) => connection.provider !== nextConnection.provider);
 
   return [nextConnection, ...withoutCurrent];
+}
+
+function upsertMemoryRecord(records: MemoryRecord[], nextRecord: MemoryRecord) {
+  const withoutCurrent = records.filter((record) => record.id !== nextRecord.id);
+
+  return [nextRecord, ...withoutCurrent].sort((left, right) => right.updated_at - left.updated_at);
+}
+
+function getMemoryCategoryLabel(category: MemoryCategory) {
+  return memoryCategories.find((item) => item.value === category)?.label ?? 'Pamiec';
+}
+
+function getMemorySourceLabel(record: MemoryRecord) {
+  if (record.source_kind === 'gmail') {
+    return 'Gmail';
+  }
+
+  if (record.source_kind === 'calendar') {
+    return 'Kalendarz';
+  }
+
+  if (record.source_kind === 'conversation') {
+    return record.source_conversation_id
+      ? `Rozmowa: ${record.source_conversation_id}`
+      : 'Rozmowa';
+  }
+
+  return 'Dodane przez uzytkownika';
+}
+
+function formatDateTime(timestamp: number) {
+  return new Intl.DateTimeFormat('pl-PL', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(new Date(timestamp * 1000));
 }
 
 function getVoiceButtonLabel(recordingState: string, loadState: string) {

@@ -47,6 +47,10 @@ directory. The frontend talks to the backend through Tauri commands:
 
 Every new model request includes recent messages from the current chat plus a compact memory slice
 from earlier chats, so a new conversation can still reuse context from previous conversations.
+The `Pamiec` workspace tab also lets the user manage explicit memory records. Those records are
+stored in the same local SQLite database and are added to future model prompts before raw
+cross-conversation recall. Manual records are marked as user-added, with source metadata reserved
+for future Gmail, Calendar, and chat-derived memory.
 
 ## Google Calendar Plugin
 

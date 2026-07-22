@@ -22,7 +22,8 @@ an existing feature changes behavior, update this file in the same change.
 - Supports creating and continuing multiple local chats.
 - Stores conversations and messages in a local SQLite database owned by the app.
 - Sends chat prompts to the OpenAI Responses API through the Tauri backend.
-- Includes recent current-chat history and a compact slice of prior conversations in model context.
+- Includes explicit user-managed memory records, recent current-chat history, and a compact slice of
+  prior conversations in model context.
 
 ### Tool-Aware Chat Context
 
@@ -58,10 +59,20 @@ an existing feature changes behavior, update this file in the same change.
 
 ### Memory View
 
-- Provides a first `Pamiec` workspace tab.
-- Shows the planned memory categories:
+- Provides a `Pamiec` workspace tab for managing explicit memory records.
+- Lets the user add, edit, and delete memory records stored in the local SQLite database.
+- Marks manually created memory records as added by the user.
+- Supports source metadata for future memory records from Gmail, Calendar, or a specific chat.
+- Supports the following memory categories:
   - user facts and preferences,
+  - projects,
+  - decisions,
+  - tool-derived notes,
+  - privacy rules.
+- Shows the original memory design checklist for:
+  - facts and preferences,
   - conversation memory,
   - tool-derived memory,
   - control and privacy rules.
-- Does not yet provide editable structured memory records.
+- Explicit memory records are included in future model prompts before raw conversation recall.
+- Does not yet create structured memory records automatically from chats or tools.

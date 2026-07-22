@@ -16,7 +16,7 @@ use tauri::{Manager, State};
 
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-4.1-mini";
-const CHAT_INSTRUCTIONS: &str = "Jestes XO, spokojnym asystentem Human First. Odpowiadaj po polsku, konkretnie i zyczliwie. Masz pamietac wczesniejsze rozmowy uzytkownika, kiedy dostajesz je w kontekscie. Nie udawaj dostepu do narzedzi, ktorych nie masz. Jesli kontekst z poprzednich rozmow pomaga, uzyj go naturalnie i dyskretnie.";
+const CHAT_INSTRUCTIONS: &str = "Jestes XO, spokojnym asystentem Human First. Odpowiadaj po polsku, konkretnie i zyczliwie. Masz pamietac wczesniejsze rozmowy uzytkownika, kiedy dostajesz je w kontekscie. Jawna pamiec ustawiona przez uzytkownika ma pierwszenstwo przed surowa historia rozmow. Nie udawaj dostepu do narzedzi, ktorych nie masz. Jesli kontekst z poprzednich rozmow pomaga, uzyj go naturalnie i dyskretnie.";
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -67,6 +67,17 @@ struct ChatResponse {
     conversation: ConversationSummary,
     user_message: ChatMessage,
     assistant_message: ChatMessage,
+}
+
+#[derive(Serialize)]
+struct MemoryRecord {
+    id: String,
+    category: String,
+    content: String,
+    source_kind: String,
+    source_conversation_id: Option<String>,
+    created_at: i64,
+    updated_at: i64,
 }
 
 #[derive(Serialize)]
@@ -290,6 +301,55 @@ fn get_conversation_messages(
 }
 
 #[tauri::command]
+fn list_memory_records(state: State<'_, AppState>) -> Result<Vec<MemoryRecord>, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+    load_memory_records(&db)
+}
+
+#[tauri::command]
+fn create_memory_record(
+    category: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<MemoryRecord, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+    insert_memory_record(&db, &category, &content)
+}
+
+#[tauri::command]
+fn update_memory_record(
+    id: String,
+    category: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<MemoryRecord, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+    edit_memory_record(&db, &id, &category, &content)
+}
+
+#[tauri::command]
+fn delete_memory_record(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+    remove_memory_record(&db, &id)
+}
+
+#[tauri::command]
 async fn send_chat_message(
     conversation_id: Option<String>,
     input: String,
@@ -372,7 +432,9 @@ fn get_google_calendar_config(state: State<'_, AppState>) -> Result<GoogleCalend
     let has_client_secret = load_google_client_secret().is_some();
 
     Ok(GoogleCalendarConfig {
-        has_client_id: client_id.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        has_client_id: client_id
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty()),
         client_id,
         has_client_secret,
     })
@@ -697,7 +759,12 @@ fn disconnect_google_calendar(state: State<'_, AppState>) -> Result<PluginConnec
     )
     .map_err(|error| format!("Nie udalo sie odlaczyc Google Calendar. {error}"))?;
 
-    load_plugin_connection(&db, GOOGLE_CALENDAR_PROVIDER, "Google Calendar", GOOGLE_CALENDAR_SCOPES)
+    load_plugin_connection(
+        &db,
+        GOOGLE_CALENDAR_PROVIDER,
+        "Google Calendar",
+        GOOGLE_CALENDAR_SCOPES,
+    )
 }
 
 #[tauri::command]
@@ -779,10 +846,9 @@ async fn load_google_calendar_events(days_ahead: i64) -> Result<Vec<CalendarEven
 
     let status = response.status();
     if !status.is_success() {
-        let error_body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Nie udalo sie odczytac tresci bledu Google Calendar API.".to_string());
+        let error_body = response.text().await.unwrap_or_else(|_| {
+            "Nie udalo sie odczytac tresci bledu Google Calendar API.".to_string()
+        });
         log::warn!("Google Calendar API failed: status={status}, body={error_body}");
 
         return Err(format_google_api_error(
@@ -822,10 +888,7 @@ async fn load_recent_gmail_messages() -> Result<Vec<GmailMessageSummary>, String
     let response = client
         .get(GMAIL_MESSAGES_URL)
         .bearer_auth(&access_token)
-        .query(&[
-            ("maxResults", "20"),
-            ("includeSpamTrash", "true"),
-        ])
+        .query(&[("maxResults", "20"), ("includeSpamTrash", "true")])
         .send()
         .await
         .map_err(|error| format!("Nie udalo sie pobrac listy Gmail. {error}"))?;
@@ -838,7 +901,11 @@ async fn load_recent_gmail_messages() -> Result<Vec<GmailMessageSummary>, String
             .unwrap_or_else(|_| "Nie udalo sie odczytac tresci bledu Gmail API.".to_string());
         log::warn!("Gmail API messages.list failed: status={status}, body={error_body}");
 
-        return Err(format_google_api_error("Gmail API", status.as_u16(), &error_body));
+        return Err(format_google_api_error(
+            "Gmail API",
+            status.as_u16(),
+            &error_body,
+        ));
     }
 
     let payload = response
@@ -902,9 +969,24 @@ fn init_database(db_path: PathBuf) -> Result<Connection, String> {
           value TEXT NOT NULL,
           updated_at INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS memory_records (
+          id TEXT PRIMARY KEY,
+          category TEXT NOT NULL,
+          content TEXT NOT NULL,
+          source TEXT,
+          source_kind TEXT NOT NULL DEFAULT 'user',
+          source_conversation_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_memory_records_updated
+          ON memory_records(updated_at DESC);
         ",
     )
     .map_err(|error| format!("Nie udalo sie przygotowac bazy XO. {error}"))?;
+    ensure_memory_source_columns(&db)?;
 
     Ok(db)
 }
@@ -992,9 +1074,29 @@ fn build_openai_input(
     tool_context: &ToolContext,
 ) -> Result<String, String> {
     let memory = load_cross_conversation_memory(db, conversation_id)?;
+    let managed_memory = load_memory_records(db)?;
     let history = load_messages(db, conversation_id)?;
     let mut input = String::new();
 
+    input.push_str("Jawna pamiec XO ustawiona przez uzytkownika:\n");
+    if managed_memory.is_empty() {
+        input.push_str("- Brak jawnych wpisow pamieci.\n");
+    } else {
+        for item in managed_memory.iter().take(24) {
+            input.push_str("- [");
+            input.push_str(&memory_category_label(&item.category));
+            input.push_str(", ");
+            input.push_str(&memory_source_label(
+                &item.source_kind,
+                item.source_conversation_id.as_deref(),
+            ));
+            input.push_str("] ");
+            input.push_str(&truncate(&item.content, 360));
+            input.push('\n');
+        }
+    }
+
+    input.push('\n');
     input.push_str("Pamiec z poprzednich rozmow XO:\n");
     if memory.is_empty() {
         input.push_str("- Brak jeszcze zapisanych poprzednich rozmow.\n");
@@ -1010,7 +1112,14 @@ fn build_openai_input(
     if history.is_empty() {
         input.push_str("- To poczatek tej rozmowy.\n");
     } else {
-        for message in history.iter().rev().take(24).collect::<Vec<_>>().into_iter().rev() {
+        for message in history
+            .iter()
+            .rev()
+            .take(24)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             input.push_str(match message.role.as_str() {
                 "assistant" => "XO: ",
                 _ => "Uzytkownik: ",
@@ -1051,7 +1160,11 @@ fn load_cross_conversation_memory(
             let title: String = row.get(0)?;
             let role: String = row.get(1)?;
             let content: String = row.get(2)?;
-            let role_label = if role == "assistant" { "XO" } else { "Uzytkownik" };
+            let role_label = if role == "assistant" {
+                "XO"
+            } else {
+                "Uzytkownik"
+            };
 
             Ok(format!(
                 "{} / {}: {}",
@@ -1064,6 +1177,206 @@ fn load_cross_conversation_memory(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Nie udalo sie odczytac pamieci rozmow. {error}"))
+}
+
+fn load_memory_records(db: &Connection) -> Result<Vec<MemoryRecord>, String> {
+    let mut statement = db
+        .prepare(
+            "
+            SELECT id, category, content, source_kind, source_conversation_id, created_at, updated_at
+            FROM memory_records
+            ORDER BY updated_at DESC
+            ",
+        )
+        .map_err(|error| format!("Nie udalo sie odczytac pamieci XO. {error}"))?;
+
+    let rows = statement
+        .query_map([], map_memory_record)
+        .map_err(|error| format!("Nie udalo sie odczytac pamieci XO. {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Nie udalo sie odczytac pamieci XO. {error}"))
+}
+
+fn insert_memory_record(
+    db: &Connection,
+    category: &str,
+    content: &str,
+) -> Result<MemoryRecord, String> {
+    let category = normalize_memory_category(category)?;
+    let content = normalize_memory_content(content)?;
+    let now = unix_timestamp();
+    let id = create_id("mem");
+
+    db.execute(
+        "INSERT INTO memory_records
+         (id, category, content, source, source_kind, source_conversation_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            id,
+            category,
+            content,
+            Option::<String>::None,
+            "user",
+            Option::<String>::None,
+            now,
+            now
+        ],
+    )
+    .map_err(|error| format!("Nie udalo sie zapisac pamieci XO. {error}"))?;
+
+    load_memory_record(db, &id)
+}
+
+fn edit_memory_record(
+    db: &Connection,
+    id: &str,
+    category: &str,
+    content: &str,
+) -> Result<MemoryRecord, String> {
+    let category = normalize_memory_category(category)?;
+    let content = normalize_memory_content(content)?;
+    let changed = db
+        .execute(
+            "UPDATE memory_records
+             SET category = ?1, content = ?2, updated_at = ?3
+             WHERE id = ?4",
+            params![category, content, unix_timestamp(), id],
+        )
+        .map_err(|error| format!("Nie udalo sie zaktualizowac pamieci XO. {error}"))?;
+
+    if changed == 0 {
+        return Err("Nie znaleziono wpisu pamieci XO.".to_string());
+    }
+
+    load_memory_record(db, id)
+}
+
+fn remove_memory_record(db: &Connection, id: &str) -> Result<(), String> {
+    let changed = db
+        .execute("DELETE FROM memory_records WHERE id = ?1", params![id])
+        .map_err(|error| format!("Nie udalo sie usunac pamieci XO. {error}"))?;
+
+    if changed == 0 {
+        return Err("Nie znaleziono wpisu pamieci XO.".to_string());
+    }
+
+    Ok(())
+}
+
+fn load_memory_record(db: &Connection, id: &str) -> Result<MemoryRecord, String> {
+    db.query_row(
+        "
+        SELECT id, category, content, source_kind, source_conversation_id, created_at, updated_at
+        FROM memory_records
+        WHERE id = ?1
+        ",
+        params![id],
+        map_memory_record,
+    )
+    .map_err(|error| format!("Nie udalo sie odczytac pamieci XO. {error}"))
+}
+
+fn map_memory_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
+    Ok(MemoryRecord {
+        id: row.get(0)?,
+        category: row.get(1)?,
+        content: row.get(2)?,
+        source_kind: row.get(3)?,
+        source_conversation_id: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
+fn normalize_memory_category(category: &str) -> Result<String, String> {
+    let category = category.trim();
+    let allowed = [
+        "user_fact",
+        "preference",
+        "project",
+        "decision",
+        "tool_note",
+        "privacy",
+    ];
+
+    if allowed.contains(&category) {
+        Ok(category.to_string())
+    } else {
+        Err("Wybierz poprawna kategorie pamieci.".to_string())
+    }
+}
+
+fn normalize_memory_content(content: &str) -> Result<String, String> {
+    let content = content.trim();
+
+    if content.is_empty() {
+        return Err("Wpis pamieci nie moze byc pusty.".to_string());
+    }
+
+    Ok(truncate(content, 1200))
+}
+
+fn memory_category_label(category: &str) -> String {
+    match category {
+        "user_fact" => "fakt o uzytkowniku",
+        "preference" => "preferencja",
+        "project" => "projekt",
+        "decision" => "decyzja",
+        "tool_note" => "wniosek z narzedzia",
+        "privacy" => "prywatnosc",
+        _ => "inne",
+    }
+    .to_string()
+}
+
+fn memory_source_label(source_kind: &str, source_conversation_id: Option<&str>) -> String {
+    match source_kind {
+        "user" => "dodane przez uzytkownika".to_string(),
+        "gmail" => "Gmail".to_string(),
+        "calendar" => "Kalendarz".to_string(),
+        "conversation" => source_conversation_id
+            .map(|id| format!("rozmowa: {id}"))
+            .unwrap_or_else(|| "rozmowa".to_string()),
+        _ => "nieznane zrodlo".to_string(),
+    }
+}
+
+fn ensure_memory_source_columns(db: &Connection) -> Result<(), String> {
+    let columns = table_columns(db, "memory_records")?;
+
+    if !columns.iter().any(|column| column == "source_kind") {
+        db.execute(
+            "ALTER TABLE memory_records ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'user'",
+            [],
+        )
+        .map_err(|error| format!("Nie udalo sie dodac typu zrodla pamieci XO. {error}"))?;
+    }
+
+    if !columns
+        .iter()
+        .any(|column| column == "source_conversation_id")
+    {
+        db.execute(
+            "ALTER TABLE memory_records ADD COLUMN source_conversation_id TEXT",
+            [],
+        )
+        .map_err(|error| format!("Nie udalo sie dodac rozmowy zrodlowej pamieci XO. {error}"))?;
+    }
+
+    Ok(())
+}
+
+fn table_columns(db: &Connection, table_name: &str) -> Result<Vec<String>, String> {
+    let mut statement = db
+        .prepare(&format!("PRAGMA table_info({table_name})"))
+        .map_err(|error| format!("Nie udalo sie odczytac schematu bazy XO. {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("Nie udalo sie odczytac kolumn bazy XO. {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Nie udalo sie odczytac kolumn bazy XO. {error}"))
 }
 
 async fn build_tool_context(input: &str, state: &State<'_, AppState>) -> ToolContext {
@@ -1268,7 +1581,10 @@ fn load_conversations(db: &Connection) -> Result<Vec<ConversationSummary>, Strin
         .map_err(|error| format!("Nie udalo sie pobrac rozmow. {error}"))
 }
 
-fn load_conversation(db: &Connection, conversation_id: &str) -> Result<ConversationSummary, String> {
+fn load_conversation(
+    db: &Connection,
+    conversation_id: &str,
+) -> Result<ConversationSummary, String> {
     db.query_row(
         "
         SELECT
@@ -1362,7 +1678,10 @@ fn load_plugin_connection(
         provider: provider.to_string(),
         label: label.to_string(),
         account_email: None,
-        scopes: default_scopes.split_whitespace().map(str::to_string).collect(),
+        scopes: default_scopes
+            .split_whitespace()
+            .map(str::to_string)
+            .collect(),
         connected: false,
         connected_at: None,
         updated_at: None,
@@ -1403,7 +1722,7 @@ fn plugin_connection_exists(db: &Connection, provider: &str) -> Result<bool, Str
     )
     .optional()
     .map(|row| row.is_some())
-        .map_err(|error| format!("Nie udalo sie sprawdzic statusu wtyczki. {error}"))
+    .map_err(|error| format!("Nie udalo sie sprawdzic statusu wtyczki. {error}"))
 }
 
 fn save_plugin_setting(db: &Connection, key: &str, value: &str) -> Result<(), String> {
@@ -1442,7 +1761,10 @@ fn load_google_client_id(db: &Connection) -> Result<String, String> {
     if is_valid_google_client_id(&configured) {
         Ok(configured)
     } else {
-        Err("Brakuje Google OAuth Client ID. Wklej go w panelu wtyczki Google Calendar.".to_string())
+        Err(
+            "Brakuje Google OAuth Client ID. Wklej go w panelu wtyczki Google Calendar."
+                .to_string(),
+        )
     }
 }
 
@@ -1549,7 +1871,11 @@ async fn exchange_google_oauth_code(
             .unwrap_or_else(|_| "Nie udalo sie odczytac tresci bledu Google OAuth.".to_string());
         log::warn!("Google OAuth token exchange failed: status={status}, body={error_body}");
 
-        return Err(format_google_oauth_error(status.as_u16(), "laczenia", &error_body));
+        return Err(format_google_oauth_error(
+            status.as_u16(),
+            "laczenia",
+            &error_body,
+        ));
     }
 
     let payload = response
@@ -1640,7 +1966,11 @@ async fn ensure_google_access_token_for(
             .unwrap_or_else(|_| "Nie udalo sie odczytac tresci bledu Google OAuth.".to_string());
         log::warn!("Google OAuth refresh failed: status={status}, body={error_body}");
 
-        return Err(format_google_oauth_error(status.as_u16(), "odswiezania", &error_body));
+        return Err(format_google_oauth_error(
+            status.as_u16(),
+            "odswiezania",
+            &error_body,
+        ));
     }
 
     let payload = response
@@ -1724,7 +2054,11 @@ async fn load_gmail_message_metadata(
             "Gmail API messages.get failed: status={status}, message_id={message_id}, body={error_body}"
         );
 
-        return Err(format_google_api_error("Gmail API", status.as_u16(), &error_body));
+        return Err(format_google_api_error(
+            "Gmail API",
+            status.as_u16(),
+            &error_body,
+        ));
     }
 
     let payload = response
@@ -1768,7 +2102,10 @@ fn wait_for_google_oauth_callback(
     let request = String::from_utf8_lossy(&buffer[..size]);
     let first_line = request.lines().next().unwrap_or_default();
     let path = first_line.split_whitespace().nth(1).unwrap_or_default();
-    let query = path.split_once('?').map(|(_, query)| query).unwrap_or_default();
+    let query = path
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
     let code = query_param(query, "code");
     let state = query_param(query, "state");
     let error = query_param(query, "error");
@@ -1835,7 +2172,9 @@ fn open_url_in_default_browser(url: &str) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!("System nie otworzyl przegladarki. Status: {status}"))
+        Err(format!(
+            "System nie otworzyl przegladarki. Status: {status}"
+        ))
     }
 }
 
@@ -1885,7 +2224,11 @@ fn percent_decode(value: &str) -> String {
             }
         }
 
-        output.push(if bytes[index] == b'+' { b' ' } else { bytes[index] });
+        output.push(if bytes[index] == b'+' {
+            b' '
+        } else {
+            bytes[index]
+        });
         index += 1;
     }
 
@@ -2051,6 +2394,10 @@ pub fn run() {
             list_conversations,
             create_conversation,
             get_conversation_messages,
+            list_memory_records,
+            create_memory_record,
+            update_memory_record,
+            delete_memory_record,
             send_chat_message,
             request_gpt_feedback,
             list_plugin_connections,

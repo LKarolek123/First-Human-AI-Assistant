@@ -17,7 +17,8 @@ update this file in the same change.
 ### Local Application Data
 
 - XO can read and write its local SQLite database in the Tauri app data directory.
-- The database stores chat conversations, messages, plugin connection metadata, and plugin settings.
+- The database stores chat conversations, messages, explicit memory records, plugin connection
+  metadata, and plugin settings.
 - The database does not intentionally store Google OAuth access tokens or refresh tokens.
 
 ### OpenAI API
@@ -27,6 +28,7 @@ update this file in the same change.
 - The OpenAI API key is not bundled into the React frontend.
 - Model context may include:
   - current user prompt,
+  - explicit user-managed memory records,
   - recent chat history,
   - compact prior conversation memory,
   - selected Google Calendar event summaries,
@@ -70,6 +72,17 @@ update this file in the same change.
 - Audio is used for local transcription in the current app flow.
 - Voice transcript text can be inserted into a chat prompt by the user.
 
+### Explicit Memory
+
+- XO can create, read, update, and delete explicit memory records in its local SQLite database.
+- Memory records can include user facts, preferences, projects, decisions, tool-derived notes, and
+  privacy rules.
+- Memory records store source metadata. Manual records are marked as user-added; future automated
+  records may be marked as Gmail, Calendar, or a specific chat ID.
+- Explicit memory records may be sent to the OpenAI Responses API as part of future chat context.
+- XO does not currently create explicit memory records automatically; the user manages them from the
+  `Pamiec` view.
+
 ### Not Currently Allowed
 
 - No filesystem management outside the app workspace/data paths.
@@ -78,5 +91,5 @@ update this file in the same change.
 - No push notifications or urgent alert delivery yet.
 - No calendar writes.
 - No Gmail writes.
-- No automatic structured memory writes beyond chat history storage.
-
+- No automatic structured memory writes beyond user-created explicit memory records and chat
+  history storage.

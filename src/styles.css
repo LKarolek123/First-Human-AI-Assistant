@@ -21,6 +21,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -466,6 +467,99 @@ h1 {
   gap: 18px;
 }
 
+.memoryEditor {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.memoryField {
+  display: grid;
+  gap: 7px;
+}
+
+.memoryField span {
+  color: #25312d;
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+
+.memoryField input,
+.memoryField select,
+.memoryField textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #c8cec9;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #25312d;
+  line-height: 1.45;
+}
+
+.memoryField textarea {
+  min-height: 116px;
+  resize: vertical;
+}
+
+.memoryField input:focus,
+.memoryField select:focus,
+.memoryField textarea:focus {
+  border-color: #2f8f65;
+  outline: 3px solid rgb(47 143 101 / 16%);
+}
+
+.memoryNotice {
+  margin: 0;
+  color: #1f6747;
+  font-weight: 650;
+}
+
+.memoryList {
+  display: grid;
+  gap: 10px;
+}
+
+.memoryRecord {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.memoryRecord strong {
+  color: #17201d;
+}
+
+.memoryRecord p {
+  margin: 7px 0;
+  color: #25312d;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.memoryRecord small {
+  color: #66736d;
+}
+
+.memoryRecordActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.dangerButton {
+  border-color: #d4b5ba;
+  color: #8f2532;
+}
+
 .memorySection {
   padding-bottom: 18px;
   border-bottom: 1px solid #d8d4cb;
@@ -738,6 +832,14 @@ h1 {
   .assistantHeader {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .memoryRecord {
+    grid-template-columns: 1fr;
+  }
+
+  .memoryRecordActions {
+    justify-content: stretch;
   }
 
   .primaryButton,
