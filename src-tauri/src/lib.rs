@@ -779,7 +779,17 @@ async fn load_google_calendar_events(days_ahead: i64) -> Result<Vec<CalendarEven
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("Google Calendar API zwrocilo blad {status}."));
+        let error_body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Nie udalo sie odczytac tresci bledu Google Calendar API.".to_string());
+        log::warn!("Google Calendar API failed: status={status}, body={error_body}");
+
+        return Err(format_google_api_error(
+            "Google Calendar API",
+            status.as_u16(),
+            &error_body,
+        ));
     }
 
     let payload = response
@@ -822,7 +832,13 @@ async fn load_recent_gmail_messages() -> Result<Vec<GmailMessageSummary>, String
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("Gmail API zwrocilo blad {status}."));
+        let error_body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Nie udalo sie odczytac tresci bledu Gmail API.".to_string());
+        log::warn!("Gmail API messages.list failed: status={status}, body={error_body}");
+
+        return Err(format_google_api_error("Gmail API", status.as_u16(), &error_body));
     }
 
     let payload = response
@@ -1475,6 +1491,30 @@ fn format_google_oauth_error(status: u16, phase: &str, error_body: &str) -> Stri
     )
 }
 
+fn format_google_api_error(api_name: &str, status: u16, error_body: &str) -> String {
+    let hint = if error_body.contains("accessNotConfigured")
+        || error_body.contains("SERVICE_DISABLED")
+        || error_body.contains("has not been used")
+        || error_body.contains("disabled")
+    {
+        " Wyglada na to, ze API nie jest wlaczone w Google Cloud dla tego projektu. Wlacz odpowiednie API w Google Cloud Console, a potem sprobuj ponownie."
+    } else if error_body.contains("insufficientPermissions")
+        || error_body.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+        || error_body.contains("Request had insufficient authentication scopes")
+    {
+        " Token nie ma wymaganego scope. Odlacz wtyczke, upewnij sie, ze consent screen zawiera wymagany scope, a potem polacz ponownie."
+    } else if error_body.contains("domainPolicy") {
+        " Konto lub organizacja Google blokuje dostep tej aplikacji zasadami domeny."
+    } else {
+        ""
+    };
+
+    format!(
+        "{api_name} zwrocilo blad {status}.{hint} Szczegoly: {}",
+        truncate(error_body, 700)
+    )
+}
+
 async fn exchange_google_oauth_code(
     client_id: &str,
     client_secret: Option<&str>,
@@ -1676,7 +1716,15 @@ async fn load_gmail_message_metadata(
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("Gmail API zwrocilo blad {status} przy wiadomosci."));
+        let error_body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Nie udalo sie odczytac tresci bledu Gmail API.".to_string());
+        log::warn!(
+            "Gmail API messages.get failed: status={status}, message_id={message_id}, body={error_body}"
+        );
+
+        return Err(format_google_api_error("Gmail API", status.as_u16(), &error_body));
     }
 
     let payload = response

@@ -102,3 +102,9 @@ read-only command rather than broad mailbox access.
 
 See [docs/vision.md](docs/vision.md), [docs/roadmap.md](docs/roadmap.md), and [docs/architecture.md](docs/architecture.md).
 
+## Change Discipline
+
+When XO gains or changes user-visible behavior, update [Features.md](Features.md). When XO gains or
+changes data access, credentials, tools, APIs, or action permissions, update
+[Permissions.md](Permissions.md) in the same change.
+
