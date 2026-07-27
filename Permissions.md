@@ -77,9 +77,12 @@ update this file in the same change.
 ### Voice And Microphone
 
 - XO can request microphone access through the browser runtime when the user uses voice recording.
+- Audio is captured from the browser microphone with requested echo cancellation, noise suppression,
+  automatic gain control, and mono input where supported.
 - Audio is used for local transcription in the current app flow.
 - After speech followed by about 3 seconds of silence, XO can automatically send the local
   transcript as a chat message through the Tauri backend.
+- The selected local Whisper model is stored in local browser storage.
 
 ### Explicit Memory
 

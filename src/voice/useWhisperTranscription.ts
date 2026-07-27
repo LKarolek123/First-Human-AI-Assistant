@@ -7,25 +7,77 @@ import { audioBlobToMono16k } from './audio';
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 type RecordingState = 'idle' | 'recording' | 'transcribing';
+export type WhisperModelId =
+  | 'Xenova/whisper-tiny'
+  | 'Xenova/whisper-base'
+  | 'Xenova/whisper-small';
 type AutomaticSpeechRecognitionPipelineFactory = (
   task: 'automatic-speech-recognition',
   model: string,
 ) => Promise<AutomaticSpeechRecognitionPipeline>;
 
-const MODEL_ID = 'Xenova/whisper-tiny';
+export const whisperModelOptions: Array<{
+  id: WhisperModelId;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'Xenova/whisper-tiny',
+    label: 'Szybki',
+    description: 'najszybszy, mniej dokladny',
+  },
+  {
+    id: 'Xenova/whisper-base',
+    label: 'Zbalansowany',
+    description: 'dobry kompromis',
+  },
+  {
+    id: 'Xenova/whisper-small',
+    label: 'Dokladny',
+    description: 'wolniejszy, najlepszy lokalnie',
+  },
+];
+
+const DEFAULT_MODEL_ID: WhisperModelId = 'Xenova/whisper-base';
+const MODEL_STORAGE_KEY = 'xo.voice.modelId';
 const LANGUAGE = 'polish';
 const LOW_INPUT_LEVEL = 0.08;
 const SPEECH_INPUT_LEVEL = 0.12;
 const SILENCE_INPUT_LEVEL = 0.06;
 const AUTO_STOP_SILENCE_MS = 3000;
+const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
+  audio: {
+    autoGainControl: true,
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+  },
+};
 
-let transcriberPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null;
+const loadedModelIds = new Set<string>();
+const transcriberPromises = new Map<string, Promise<AutomaticSpeechRecognitionPipeline>>();
 
-function getTranscriber() {
-  transcriberPromise ??= import('@huggingface/transformers').then((transformers) => {
-    const createPipeline = transformers.pipeline as AutomaticSpeechRecognitionPipelineFactory;
-    return createPipeline('automatic-speech-recognition', MODEL_ID);
-  });
+function getTranscriber(modelId: WhisperModelId) {
+  let transcriberPromise = transcriberPromises.get(modelId);
+
+  if (!transcriberPromise) {
+    transcriberPromise = import('@huggingface/transformers')
+      .then((transformers) => {
+        const createPipeline = transformers.pipeline as AutomaticSpeechRecognitionPipelineFactory;
+        return createPipeline('automatic-speech-recognition', modelId);
+      })
+      .then((transcriber) => {
+        loadedModelIds.add(modelId);
+        return transcriber;
+      })
+      .catch((error) => {
+        transcriberPromises.delete(modelId);
+        loadedModelIds.delete(modelId);
+        throw error;
+      });
+    transcriberPromises.set(modelId, transcriberPromise);
+  }
+
   return transcriberPromise;
 }
 
@@ -46,6 +98,7 @@ export function useWhisperTranscription() {
   const [inputLevel, setInputLevel] = useState(0);
   const [peakInputLevel, setPeakInputLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [modelId, setModelId] = useState<WhisperModelId>(() => loadStoredModelId());
 
   useEffect(() => {
     setIsSupported(
@@ -125,13 +178,33 @@ export function useWhisperTranscription() {
     setLoadState('loading');
 
     try {
-      await getTranscriber();
+      await getTranscriber(modelId);
       setLoadState('ready');
+      return true;
     } catch (loadError) {
       setLoadState('error');
       setError(getErrorMessage(loadError, 'Nie udało się załadować modelu Whisper.'));
+      return false;
     }
-  }, []);
+  }, [modelId]);
+
+  useEffect(() => {
+    localStorage.setItem(MODEL_STORAGE_KEY, modelId);
+
+    if (loadedModelIds.has(modelId)) {
+      setLoadState('ready');
+    } else {
+      setLoadState('idle');
+    }
+  }, [modelId]);
+
+  useEffect(() => {
+    if (!isSupported || loadState === 'ready' || loadState === 'loading') {
+      return;
+    }
+
+    void loadModel();
+  }, [isSupported, loadModel, loadState]);
 
   const stopStream = useCallback(() => {
     stopAudioMeter();
@@ -145,7 +218,7 @@ export function useWhisperTranscription() {
       setError(null);
 
       try {
-        const transcriber = await getTranscriber();
+        const transcriber = await getTranscriber(modelId);
         const audio = await audioBlobToMono16k(audioBlob);
         const output = await transcriber(audio, {
           chunk_length_s: 30,
@@ -168,7 +241,7 @@ export function useWhisperTranscription() {
         stopStream();
       }
     },
-    [stopStream],
+    [modelId, stopStream],
   );
 
   const startRecording = useCallback(async () => {
@@ -187,11 +260,17 @@ export function useWhisperTranscription() {
 
     try {
       if (loadState !== 'ready') {
-        await loadModel();
+        const loaded = await loadModel();
+
+        if (!loaded) {
+          return;
+        }
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
+      const recorder = new MediaRecorder(stream, {
+        audioBitsPerSecond: 128_000,
+      });
 
       streamRef.current = stream;
       chunksRef.current = [];
@@ -245,14 +324,23 @@ export function useWhisperTranscription() {
     isSupported,
     loadModel,
     loadState,
-    modelId: MODEL_ID,
+    modelId,
     peakInputLevel,
     recordingState,
     resetTranscript,
+    setModelId,
     startRecording,
     stopRecording,
     transcript,
   };
+}
+
+function loadStoredModelId() {
+  const storedModelId = localStorage.getItem(MODEL_STORAGE_KEY);
+
+  return whisperModelOptions.some((option) => option.id === storedModelId)
+    ? (storedModelId as WhisperModelId)
+    : DEFAULT_MODEL_ID;
 }
 
 function getTranscriptionText(
@@ -307,4 +395,3 @@ function getErrorMessage(error: unknown, fallback: string) {
 
   return fallback;
 }
-

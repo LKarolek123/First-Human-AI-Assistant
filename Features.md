@@ -59,8 +59,15 @@ an existing feature changes behavior, update this file in the same change.
 
 ### Voice
 
-- Provides local browser microphone recording controls.
-- Uses local speech-to-text support for Polish transcription.
+- Provides browser microphone recording controls inside the main chat composer.
+- Uses local speech-to-text support for Polish transcription with selectable Whisper models:
+  - fast: `Xenova/whisper-tiny`,
+  - balanced: `Xenova/whisper-base`,
+  - accurate: `Xenova/whisper-small`.
+- Preloads the selected voice model after microphone support is detected and remembers the user's
+  selected model in local browser storage.
+- Requests microphone capture with echo cancellation, noise suppression, automatic gain control, and
+  mono audio when the browser supports those constraints.
 - Automatically stops recording after detecting speech followed by about 3 seconds of silence.
 - Automatically sends the transcribed voice message through the normal chat flow without requiring a
   separate transcript confirmation button.
