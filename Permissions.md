@@ -33,6 +33,14 @@ update this file in the same change.
   - compact prior conversation memory,
   - selected Google Calendar event summaries,
   - selected Gmail metadata and snippets.
+- XO can make a second bounded OpenAI Responses API request after an ordinary chat response to
+  generate optional memory suggestions. That request is limited to:
+  - the latest user message,
+  - XO's latest assistant response,
+  - existing explicit memory records,
+  - short memory policy instructions.
+- The memory suggestion request must not include full cross-chat history, selected tool context, or
+  Google/Gmail raw data unless that data was explicitly present in the latest chat exchange.
 
 ### Google OAuth Credentials
 
@@ -77,11 +85,14 @@ update this file in the same change.
 - XO can create, read, update, and delete explicit memory records in its local SQLite database.
 - Memory records can include user facts, preferences, projects, decisions, tool-derived notes, and
   privacy rules.
-- Memory records store source metadata. Manual records are marked as user-added; future automated
-  records may be marked as Gmail, Calendar, or a specific chat ID.
+- Memory records store source metadata. Manual records are marked as user-added; approved chat
+  suggestions are marked with `source_kind = conversation` and the source conversation ID.
 - Explicit memory records may be sent to the OpenAI Responses API as part of future chat context.
-- XO does not currently create explicit memory records automatically; the user manages them from the
-  `Pamiec` view.
+- XO may suggest explicit memory records after chat responses, but it cannot save them
+  automatically. The user must choose `Zapisz` and may edit or reject each suggestion.
+- XO validates model-returned suggestions in the Tauri backend before showing or saving them, and
+  discards suggestions that appear to contain secrets, passwords, tokens, health data, private data
+  about third parties, duplicate memory, or temporary facts.
 
 ### Not Currently Allowed
 
@@ -91,5 +102,4 @@ update this file in the same change.
 - No push notifications or urgent alert delivery yet.
 - No calendar writes.
 - No Gmail writes.
-- No automatic structured memory writes beyond user-created explicit memory records and chat
-  history storage.
+- No automatic structured memory writes beyond explicit user approval and chat history storage.

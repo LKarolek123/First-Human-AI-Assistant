@@ -4,11 +4,13 @@ import {
   type ConversationSummary,
   type MemoryCategory,
   type MemoryRecord,
+  type MemorySuggestion,
   createMemoryRecord,
   deleteMemoryRecord,
   getConversationMessages,
   listConversations,
   listMemoryRecords,
+  saveMemorySuggestion,
   sendChatMessage,
   updateMemoryRecord,
 } from './ai/openaiFeedback';
@@ -74,6 +76,14 @@ const memoryCategories: Array<{ value: MemoryCategory; label: string }> = [
   { value: 'privacy', label: 'Prywatnosc' },
 ];
 
+type ChatMemorySuggestion = MemorySuggestion & {
+  draftCategory: MemorySuggestion['category'];
+  draftContent: string;
+  isEditing: boolean;
+  status: 'pending' | 'saving' | 'saved';
+  error: string | null;
+};
+
 export function App() {
   const {
     error,
@@ -116,6 +126,9 @@ export function App() {
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryNotice, setMemoryNotice] = useState<string | null>(null);
   const [memoryState, setMemoryState] = useState<'idle' | 'saving' | 'deleting'>('idle');
+  const [chatMemorySuggestions, setChatMemorySuggestions] = useState<
+    Record<string, ChatMemorySuggestion[]>
+  >({});
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
@@ -267,6 +280,17 @@ export function App() {
         response.user_message,
         response.assistant_message,
       ]);
+      setChatMemorySuggestions((currentSuggestions) => ({
+        ...currentSuggestions,
+        [response.assistant_message.id]: response.memory_suggestions.map((suggestion) => ({
+          ...suggestion,
+          draftCategory: suggestion.category,
+          draftContent: suggestion.content,
+          isEditing: false,
+          status: 'pending',
+          error: null,
+        })),
+      }));
       setConversations((currentConversations) =>
         upsertConversation(currentConversations, response.conversation),
       );
@@ -481,6 +505,105 @@ export function App() {
     setMemoryContent(record.content);
     setMemoryError(null);
     setMemoryNotice(null);
+  }
+
+  function handleEditMemorySuggestion(messageId: string, suggestionId: string) {
+    setChatMemorySuggestions((currentSuggestions) =>
+      updateChatMemorySuggestion(currentSuggestions, messageId, suggestionId, {
+        isEditing: true,
+        error: null,
+      }),
+    );
+  }
+
+  function handleRejectMemorySuggestion(messageId: string, suggestionId: string) {
+    setChatMemorySuggestions((currentSuggestions) => ({
+      ...currentSuggestions,
+      [messageId]: (currentSuggestions[messageId] ?? []).filter(
+        (suggestion) => suggestion.id !== suggestionId,
+      ),
+    }));
+  }
+
+  function handleChangeMemorySuggestionCategory(
+    messageId: string,
+    suggestionId: string,
+    draftCategory: MemorySuggestion['category'],
+  ) {
+    setChatMemorySuggestions((currentSuggestions) =>
+      updateChatMemorySuggestion(currentSuggestions, messageId, suggestionId, {
+        draftCategory,
+        error: null,
+      }),
+    );
+  }
+
+  function handleChangeMemorySuggestionContent(
+    messageId: string,
+    suggestionId: string,
+    draftContent: string,
+  ) {
+    setChatMemorySuggestions((currentSuggestions) =>
+      updateChatMemorySuggestion(currentSuggestions, messageId, suggestionId, {
+        draftContent,
+        error: null,
+      }),
+    );
+  }
+
+  async function handleSaveMemorySuggestion(message: ChatMessage, suggestionId: string) {
+    const suggestion = chatMemorySuggestions[message.id]?.find(
+      (item) => item.id === suggestionId,
+    );
+
+    if (!suggestion) {
+      return;
+    }
+
+    if (!suggestion.draftContent.trim()) {
+      setChatMemorySuggestions((currentSuggestions) =>
+        updateChatMemorySuggestion(currentSuggestions, message.id, suggestionId, {
+          error: 'Wpis pamieci nie moze byc pusty.',
+        }),
+      );
+      return;
+    }
+
+    setChatMemorySuggestions((currentSuggestions) =>
+      updateChatMemorySuggestion(currentSuggestions, message.id, suggestionId, {
+        status: 'saving',
+        error: null,
+      }),
+    );
+
+    try {
+      const savedRecord = await saveMemorySuggestion(
+        suggestion.draftCategory,
+        suggestion.draftContent,
+        message.conversation_id,
+      );
+
+      setMemoryRecords((records) => upsertMemoryRecord(records, savedRecord));
+      setChatMemorySuggestions((currentSuggestions) =>
+        updateChatMemorySuggestion(currentSuggestions, message.id, suggestionId, {
+          category: savedRecord.category as MemorySuggestion['category'],
+          content: savedRecord.content,
+          draftCategory: savedRecord.category as MemorySuggestion['category'],
+          draftContent: savedRecord.content,
+          isEditing: false,
+          status: 'saved',
+          error: null,
+        }),
+      );
+      setMemoryNotice('Dodano wpis pamieci z rozmowy.');
+    } catch (saveError) {
+      setChatMemorySuggestions((currentSuggestions) =>
+        updateChatMemorySuggestion(currentSuggestions, message.id, suggestionId, {
+          status: 'pending',
+          error: getErrorMessage(saveError),
+        }),
+      );
+    }
   }
 
   function resetMemoryForm() {
@@ -755,13 +878,108 @@ export function App() {
           <div className="messageList" aria-live="polite">
             {messages.length > 0 ? (
               messages.map((message) => (
-                <article
-                  className={message.role === 'user' ? 'messageBubble messageBubbleUser' : 'messageBubble'}
-                  key={message.id}
-                >
-                  <strong>{message.role === 'user' ? 'Ty' : 'XO'}</strong>
-                  <p>{message.content}</p>
-                </article>
+                <div className="messageGroup" key={message.id}>
+                  <article
+                    className={message.role === 'user' ? 'messageBubble messageBubbleUser' : 'messageBubble'}
+                  >
+                    <strong>{message.role === 'user' ? 'Ty' : 'XO'}</strong>
+                    <p>{message.content}</p>
+                  </article>
+
+                  {message.role === 'assistant' &&
+                    (chatMemorySuggestions[message.id] ?? []).length > 0 && (
+                      <div className="memorySuggestions" aria-label="Sugestie pamieci">
+                        <strong>XO moze zapamietac</strong>
+                        {(chatMemorySuggestions[message.id] ?? []).map((suggestion) => (
+                          <article className="memorySuggestion" key={suggestion.id}>
+                            {suggestion.isEditing ? (
+                              <div className="memorySuggestionEditor">
+                                <label className="memoryField">
+                                  <span>Kategoria</span>
+                                  <select
+                                    value={suggestion.draftCategory}
+                                    onChange={(event) =>
+                                      handleChangeMemorySuggestionCategory(
+                                        message.id,
+                                        suggestion.id,
+                                        event.target.value as MemorySuggestion['category'],
+                                      )
+                                    }
+                                    disabled={suggestion.status === 'saving'}
+                                  >
+                                    {memoryCategories
+                                      .filter((category) => category.value !== 'tool_note')
+                                      .map((category) => (
+                                        <option key={category.value} value={category.value}>
+                                          {category.label}
+                                        </option>
+                                      ))}
+                                  </select>
+                                </label>
+                                <label className="memoryField">
+                                  <span>Tresc</span>
+                                  <textarea
+                                    value={suggestion.draftContent}
+                                    onChange={(event) =>
+                                      handleChangeMemorySuggestionContent(
+                                        message.id,
+                                        suggestion.id,
+                                        event.target.value,
+                                      )
+                                    }
+                                    disabled={suggestion.status === 'saving'}
+                                    rows={3}
+                                  />
+                                </label>
+                              </div>
+                            ) : (
+                              <div>
+                                <small>{getMemoryCategoryLabel(suggestion.category)}</small>
+                                <p>{suggestion.content}</p>
+                                {suggestion.reason && <span>{suggestion.reason}</span>}
+                              </div>
+                            )}
+
+                            {suggestion.error && <p className="memorySuggestionError">{suggestion.error}</p>}
+
+                            <div className="memorySuggestionActions">
+                              <button
+                                className="primaryButton"
+                                type="button"
+                                onClick={() => handleSaveMemorySuggestion(message, suggestion.id)}
+                                disabled={suggestion.status === 'saving' || suggestion.status === 'saved'}
+                              >
+                                {suggestion.status === 'saving'
+                                  ? 'Zapisuje'
+                                  : suggestion.status === 'saved'
+                                    ? 'Zapisano'
+                                    : 'Zapisz'}
+                              </button>
+                              {!suggestion.isEditing && suggestion.status !== 'saved' && (
+                                <button
+                                  className="secondaryButton"
+                                  type="button"
+                                  onClick={() => handleEditMemorySuggestion(message.id, suggestion.id)}
+                                >
+                                  Edytuj
+                                </button>
+                              )}
+                              {suggestion.status !== 'saved' && (
+                                <button
+                                  className="secondaryButton"
+                                  type="button"
+                                  onClick={() => handleRejectMemorySuggestion(message.id, suggestion.id)}
+                                  disabled={suggestion.status === 'saving'}
+                                >
+                                  Odrzuc
+                                </button>
+                              )}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                </div>
               ))
             ) : (
               <div className="emptyChat">
@@ -1011,6 +1229,20 @@ function upsertMemoryRecord(records: MemoryRecord[], nextRecord: MemoryRecord) {
   const withoutCurrent = records.filter((record) => record.id !== nextRecord.id);
 
   return [nextRecord, ...withoutCurrent].sort((left, right) => right.updated_at - left.updated_at);
+}
+
+function updateChatMemorySuggestion(
+  suggestionsByMessage: Record<string, ChatMemorySuggestion[]>,
+  messageId: string,
+  suggestionId: string,
+  updates: Partial<ChatMemorySuggestion>,
+) {
+  return {
+    ...suggestionsByMessage,
+    [messageId]: (suggestionsByMessage[messageId] ?? []).map((suggestion) =>
+      suggestion.id === suggestionId ? { ...suggestion, ...updates } : suggestion,
+    ),
+  };
 }
 
 function getMemoryCategoryLabel(category: MemoryCategory) {

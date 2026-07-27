@@ -24,6 +24,10 @@ an existing feature changes behavior, update this file in the same change.
 - Sends chat prompts to the OpenAI Responses API through the Tauri backend.
 - Includes explicit user-managed memory records, recent current-chat history, and a compact slice of
   prior conversations in model context.
+- After an ordinary chat response, may show up to 3 suggested memory records for stable future
+  context such as preferences, decisions, project facts, user facts, or working constraints.
+- Suggested memory is never saved automatically. The user must explicitly choose `Zapisz`; they can
+  edit or reject each suggestion first.
 
 ### Tool-Aware Chat Context
 
@@ -62,7 +66,8 @@ an existing feature changes behavior, update this file in the same change.
 - Provides a `Pamiec` workspace tab for managing explicit memory records.
 - Lets the user add, edit, and delete memory records stored in the local SQLite database.
 - Marks manually created memory records as added by the user.
-- Supports source metadata for future memory records from Gmail, Calendar, or a specific chat.
+- Saves approved chat memory suggestions with `source_kind = conversation` and the source chat ID.
+- Supports source metadata for memory records from Gmail, Calendar, or a specific chat.
 - Supports the following memory categories:
   - user facts and preferences,
   - projects,
@@ -75,4 +80,8 @@ an existing feature changes behavior, update this file in the same change.
   - tool-derived memory,
   - control and privacy rules.
 - Explicit memory records are included in future model prompts before raw conversation recall.
-- Does not yet create structured memory records automatically from chats or tools.
+- Uses a bounded post-response analysis request for memory suggestions. That request includes only
+  the latest user message, XO's latest response, existing explicit memory records, and short policy
+  instructions.
+- Discards suggestions that appear to contain secrets, health data, private data about third
+  parties, duplicates, or temporary facts.

@@ -428,6 +428,11 @@ h1 {
   background: #fffdf8;
 }
 
+.messageGroup {
+  display: grid;
+  gap: 8px;
+}
+
 .messageBubble,
 .emptyChat {
   max-width: min(760px, 100%);
@@ -460,6 +465,66 @@ h1 {
 .messageBubble p,
 .emptyChat p {
   margin-bottom: 0;
+}
+
+.memorySuggestions {
+  display: grid;
+  gap: 8px;
+  max-width: min(760px, 100%);
+  padding: 12px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.memorySuggestions > strong {
+  color: #17201d;
+  font-size: 0.95rem;
+}
+
+.memorySuggestion {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #cad7d1;
+  border-radius: 8px;
+  background: #f8fbf9;
+}
+
+.memorySuggestion small {
+  color: #4d6b5f;
+  font-weight: 750;
+}
+
+.memorySuggestion p {
+  margin: 5px 0;
+  color: #25312d;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.memorySuggestion span {
+  color: #66736d;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.memorySuggestionEditor {
+  display: grid;
+  gap: 10px;
+}
+
+.memorySuggestionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.memorySuggestionError {
+  margin: 0;
+  color: #8f2532;
+  font-size: 0.9rem;
+  font-weight: 650;
 }
 
 .memoryPanel {

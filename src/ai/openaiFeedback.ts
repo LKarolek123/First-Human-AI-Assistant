@@ -20,6 +20,7 @@ export type ChatResponse = {
   conversation: ConversationSummary;
   user_message: ChatMessage;
   assistant_message: ChatMessage;
+  memory_suggestions: MemorySuggestion[];
 };
 
 export type MemoryCategory =
@@ -38,6 +39,13 @@ export type MemoryRecord = {
   source_conversation_id: string | null;
   created_at: number;
   updated_at: number;
+};
+
+export type MemorySuggestion = {
+  id: string;
+  category: Exclude<MemoryCategory, 'tool_note'>;
+  content: string;
+  reason: string;
 };
 
 export type SendChatMessageRequest = {
@@ -88,6 +96,22 @@ export async function createMemoryRecord(
   return invoke<MemoryRecord>('create_memory_record', {
     category,
     content,
+  });
+}
+
+export async function saveMemorySuggestion(
+  category: MemorySuggestion['category'],
+  content: string,
+  sourceConversationId: string,
+) {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(getTauriOnlyMessage());
+  }
+
+  return invoke<MemoryRecord>('save_memory_suggestion', {
+    category,
+    content,
+    sourceConversationId,
   });
 }
 

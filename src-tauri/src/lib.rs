@@ -17,6 +17,7 @@ use tauri::{Manager, State};
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-4.1-mini";
 const CHAT_INSTRUCTIONS: &str = "Jestes XO, spokojnym asystentem Human First. Odpowiadaj po polsku, konkretnie i zyczliwie. Masz pamietac wczesniejsze rozmowy uzytkownika, kiedy dostajesz je w kontekscie. Jawna pamiec ustawiona przez uzytkownika ma pierwszenstwo przed surowa historia rozmow. Nie udawaj dostepu do narzedzi, ktorych nie masz. Jesli kontekst z poprzednich rozmow pomaga, uzyj go naturalnie i dyskretnie.";
+const MEMORY_SUGGESTION_INSTRUCTIONS: &str = "Analizujesz tylko najnowsza wiadomosc uzytkownika, najnowsza odpowiedz XO i istniejace jawne wpisy pamieci. Nie uzywaj ani nie zakladaj zadnej innej historii. Zaproponuj maksymalnie 3 stabilne i przydatne wpisy pamieci na przyszle rozmowy: preferencje, decyzje, fakty projektowe, fakty o uzytkowniku lub stale ograniczenia pracy. Nie proponuj sekretow, hasel, tokenow, kluczy API, danych zdrowotnych ani prywatnych/wrazliwych danych o osobach trzecich. Nie proponuj informacji chwilowych, oczywistych, niepewnych ani duplikatow istniejacej pamieci. Zwroc wylacznie poprawny JSON w formacie {\"suggestions\":[{\"content\":\"...\",\"category\":\"preference\",\"reason\":\"...\"}]}. Dozwolone category: user_fact, preference, project, decision, privacy.";
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -67,6 +68,7 @@ struct ChatResponse {
     conversation: ConversationSummary,
     user_message: ChatMessage,
     assistant_message: ChatMessage,
+    memory_suggestions: Vec<MemorySuggestion>,
 }
 
 #[derive(Serialize)]
@@ -78,6 +80,26 @@ struct MemoryRecord {
     source_conversation_id: Option<String>,
     created_at: i64,
     updated_at: i64,
+}
+
+#[derive(Serialize, Clone)]
+struct MemorySuggestion {
+    id: String,
+    category: String,
+    content: String,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+struct MemorySuggestionEnvelope {
+    suggestions: Vec<RawMemorySuggestion>,
+}
+
+#[derive(Deserialize)]
+struct RawMemorySuggestion {
+    content: Option<String>,
+    category: Option<String>,
+    reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -325,6 +347,30 @@ fn create_memory_record(
 }
 
 #[tauri::command]
+fn save_memory_suggestion(
+    category: String,
+    content: String,
+    source_conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<MemoryRecord, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+    ensure_conversation_exists(&db, &source_conversation_id)?;
+    let suggestion = validate_memory_suggestion(&category, &content, "")?;
+
+    insert_memory_record_with_source(
+        &db,
+        &suggestion.category,
+        &suggestion.content,
+        "conversation",
+        Some(&source_conversation_id),
+    )
+}
+
+#[tauri::command]
 fn update_memory_record(
     id: String,
     category: String,
@@ -383,17 +429,35 @@ async fn send_chat_message(
 
     let assistant_text = request_openai_chat(&openai_input).await?;
 
-    let db = state
-        .db
-        .lock()
-        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
-    let assistant_message = insert_message(&db, &conversation_id, "assistant", &assistant_text)?;
-    touch_conversation(&db, &conversation_id)?;
+    let (assistant_message, conversation, existing_memory) = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+        let assistant_message =
+            insert_message(&db, &conversation_id, "assistant", &assistant_text)?;
+        touch_conversation(&db, &conversation_id)?;
+
+        (
+            assistant_message,
+            load_conversation(&db, &conversation_id)?,
+            load_memory_records(&db)?,
+        )
+    };
+    let memory_suggestions =
+        match request_memory_suggestions(&input, &assistant_text, &existing_memory).await {
+            Ok(suggestions) => suggestions,
+            Err(error) => {
+                log::warn!("Memory suggestion analysis failed: {error}");
+                Vec::new()
+            }
+        };
 
     Ok(ChatResponse {
-        conversation: load_conversation(&db, &conversation_id)?,
+        conversation,
         user_message,
         assistant_message,
+        memory_suggestions,
     })
 }
 
@@ -1025,6 +1089,24 @@ fn ensure_conversation(
     Ok(id)
 }
 
+fn ensure_conversation_exists(db: &Connection, conversation_id: &str) -> Result<(), String> {
+    let exists = db
+        .query_row(
+            "SELECT 1 FROM conversations WHERE id = ?1",
+            params![conversation_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| format!("Nie udalo sie sprawdzic rozmowy. {error}"))?
+        .is_some();
+
+    if exists {
+        Ok(())
+    } else {
+        Err("Nie znaleziono rozmowy zrodlowej dla pamieci XO.".to_string())
+    }
+}
+
 fn insert_message(
     db: &Connection,
     conversation_id: &str,
@@ -1203,8 +1285,19 @@ fn insert_memory_record(
     category: &str,
     content: &str,
 ) -> Result<MemoryRecord, String> {
+    insert_memory_record_with_source(db, category, content, "user", None)
+}
+
+fn insert_memory_record_with_source(
+    db: &Connection,
+    category: &str,
+    content: &str,
+    source_kind: &str,
+    source_conversation_id: Option<&str>,
+) -> Result<MemoryRecord, String> {
     let category = normalize_memory_category(category)?;
     let content = normalize_memory_content(content)?;
+    let source_kind = normalize_memory_source_kind(source_kind)?;
     let now = unix_timestamp();
     let id = create_id("mem");
 
@@ -1217,8 +1310,8 @@ fn insert_memory_record(
             category,
             content,
             Option::<String>::None,
-            "user",
-            Option::<String>::None,
+            source_kind,
+            source_conversation_id,
             now,
             now
         ],
@@ -1315,6 +1408,158 @@ fn normalize_memory_content(content: &str) -> Result<String, String> {
     }
 
     Ok(truncate(content, 1200))
+}
+
+fn normalize_memory_source_kind(source_kind: &str) -> Result<String, String> {
+    let source_kind = source_kind.trim();
+    let allowed = ["user", "gmail", "calendar", "conversation"];
+
+    if allowed.contains(&source_kind) {
+        Ok(source_kind.to_string())
+    } else {
+        Err("Wybierz poprawne zrodlo pamieci.".to_string())
+    }
+}
+
+fn validate_memory_suggestion(
+    category: &str,
+    content: &str,
+    reason: &str,
+) -> Result<MemorySuggestion, String> {
+    let category = normalize_memory_suggestion_category(category)?;
+    let content = normalize_memory_content(content)?;
+    let reason = truncate(reason.trim(), 220);
+
+    if content.chars().count() < 12 {
+        return Err("Sugestia pamieci jest za krotka.".to_string());
+    }
+
+    if contains_disallowed_memory_data(&content) {
+        return Err("Sugestia zawiera dane, ktorych XO nie powinien zapisywac.".to_string());
+    }
+
+    if looks_temporary_memory(&content) {
+        return Err("Sugestia wyglada na chwilowa, a nie stabilna pamiec.".to_string());
+    }
+
+    Ok(MemorySuggestion {
+        id: create_id("mem_sug"),
+        category,
+        content,
+        reason,
+    })
+}
+
+fn normalize_memory_suggestion_category(category: &str) -> Result<String, String> {
+    let category = category.trim();
+    let allowed = ["user_fact", "preference", "project", "decision", "privacy"];
+
+    if allowed.contains(&category) {
+        Ok(category.to_string())
+    } else {
+        Err("Sugestia ma niepoprawna kategorie pamieci.".to_string())
+    }
+}
+
+fn contains_disallowed_memory_data(content: &str) -> bool {
+    let normalized = content.to_lowercase();
+    let disallowed_terms = [
+        "password",
+        "haslo",
+        "hasło",
+        "token",
+        "api key",
+        "apikey",
+        "bearer",
+        "oauth",
+        "client secret",
+        "private key",
+        "ssh key",
+        "jwt",
+        "pin",
+        "cvv",
+        "nr karty",
+        "numer karty",
+        "secret",
+        "sekret",
+        "klucz api",
+        "klucz prywatny",
+        "zdrowie",
+        "health",
+        "medical",
+        "diagno",
+        "chorob",
+        "lek ",
+        "leki",
+        "terapia",
+        "therapy",
+        "depres",
+        "cancer",
+        "rak",
+        "cukrzyc",
+        "diabetes",
+        "ciaza",
+        "ciąża",
+        "psychi",
+    ];
+
+    if disallowed_terms
+        .iter()
+        .any(|term| normalized.contains(term))
+    {
+        return true;
+    }
+
+    let third_party_terms = [
+        "zona",
+        "żona",
+        "maz",
+        "mąż",
+        "partner",
+        "partnerka",
+        "dziecko",
+        "syn",
+        "corka",
+        "córka",
+        "matka",
+        "ojciec",
+        "klient",
+        "klientka",
+        "szef",
+        "szefowa",
+        "wspolpracownik",
+        "współpracownik",
+        "kolega",
+        "kolezanka",
+        "koleżanka",
+    ];
+    let private_terms = [
+        "adres", "email", "telefon", "zarabia", "pensja", "salary", "dlug", "dług", "zwoln",
+        "konto", "pesel",
+    ];
+
+    third_party_terms
+        .iter()
+        .any(|term| normalized.contains(term))
+        && private_terms.iter().any(|term| normalized.contains(term))
+}
+
+fn looks_temporary_memory(content: &str) -> bool {
+    let normalized = content.to_lowercase();
+    let temporary_terms = [
+        "dzisiaj",
+        "jutro",
+        "wczoraj",
+        "teraz",
+        "tymczasowo",
+        "na razie",
+        "this week",
+        "today",
+        "tomorrow",
+        "yesterday",
+    ];
+
+    temporary_terms.iter().any(|term| normalized.contains(term))
 }
 
 fn memory_category_label(category: &str) -> String {
@@ -2247,12 +2492,179 @@ fn rfc3339_from_unix(timestamp: i64) -> String {
 }
 
 async fn request_openai_chat(input: &str) -> Result<String, String> {
+    request_openai_text(CHAT_INSTRUCTIONS, input).await
+}
+
+async fn request_memory_suggestions(
+    latest_user_message: &str,
+    latest_assistant_response: &str,
+    existing_memory: &[MemoryRecord],
+) -> Result<Vec<MemorySuggestion>, String> {
+    let analysis_input = build_memory_suggestion_input(
+        latest_user_message,
+        latest_assistant_response,
+        existing_memory,
+    );
+    let response_text =
+        request_openai_text(MEMORY_SUGGESTION_INSTRUCTIONS, &analysis_input).await?;
+    let raw_suggestions = parse_memory_suggestions(&response_text)?;
+    let mut suggestions = Vec::new();
+
+    for raw in raw_suggestions {
+        let Some(content) = raw.content.as_deref() else {
+            continue;
+        };
+        let Some(category) = raw.category.as_deref() else {
+            continue;
+        };
+        let Some(reason) = raw
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let Ok(suggestion) = validate_memory_suggestion(category, content, reason) else {
+            continue;
+        };
+
+        if is_duplicate_memory_suggestion(&suggestion.content, existing_memory, &suggestions) {
+            continue;
+        }
+
+        suggestions.push(suggestion);
+
+        if suggestions.len() == 3 {
+            break;
+        }
+    }
+
+    Ok(suggestions)
+}
+
+fn build_memory_suggestion_input(
+    latest_user_message: &str,
+    latest_assistant_response: &str,
+    existing_memory: &[MemoryRecord],
+) -> String {
+    let mut input = String::new();
+
+    input.push_str("Polityka skrocona:\n");
+    input.push_str("- Analizuj tylko dane w tym zapytaniu.\n");
+    input.push_str("- Proponuj tylko stabilna, przyszlosciowo uzyteczna pamiec.\n");
+    input.push_str("- Nie proponuj sekretow, zdrowia ani prywatnych danych osob trzecich.\n");
+    input.push_str("- Nie powielaj istniejacych wpisow.\n\n");
+
+    input.push_str("Istniejace jawne wpisy pamieci:\n");
+    if existing_memory.is_empty() {
+        input.push_str("- Brak.\n");
+    } else {
+        for item in existing_memory.iter().take(40) {
+            input.push_str("- [");
+            input.push_str(&item.category);
+            input.push_str("] ");
+            input.push_str(&truncate(&item.content, 360));
+            input.push('\n');
+        }
+    }
+
+    input.push_str("\nNajnowsza wiadomosc uzytkownika:\n");
+    input.push_str(&truncate(latest_user_message, 4000));
+    input.push_str("\n\nNajnowsza odpowiedz XO:\n");
+    input.push_str(&truncate(latest_assistant_response, 4000));
+
+    input
+}
+
+fn parse_memory_suggestions(response_text: &str) -> Result<Vec<RawMemorySuggestion>, String> {
+    let json_text = extract_json_payload(response_text)
+        .ok_or_else(|| "Model nie zwrocil JSON z sugestiami pamieci.".to_string())?;
+
+    if let Ok(envelope) = serde_json::from_str::<MemorySuggestionEnvelope>(&json_text) {
+        return Ok(envelope.suggestions);
+    }
+
+    serde_json::from_str::<Vec<RawMemorySuggestion>>(&json_text)
+        .map_err(|error| format!("Nie udalo sie odczytac sugestii pamieci. {error}"))
+}
+
+fn extract_json_payload(response_text: &str) -> Option<String> {
+    let trimmed = response_text.trim();
+
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return Some(trimmed.to_string());
+    }
+
+    let without_fence = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim);
+
+    if let Some(value) = without_fence {
+        return Some(value.to_string());
+    }
+
+    let object_start = trimmed.find('{');
+    let object_end = trimmed.rfind('}');
+    if let (Some(start), Some(end)) = (object_start, object_end) {
+        if start < end {
+            return Some(trimmed[start..=end].to_string());
+        }
+    }
+
+    let array_start = trimmed.find('[');
+    let array_end = trimmed.rfind(']');
+    if let (Some(start), Some(end)) = (array_start, array_end) {
+        if start < end {
+            return Some(trimmed[start..=end].to_string());
+        }
+    }
+
+    None
+}
+
+fn is_duplicate_memory_suggestion(
+    content: &str,
+    existing_memory: &[MemoryRecord],
+    suggestions: &[MemorySuggestion],
+) -> bool {
+    let normalized = normalize_for_memory_compare(content);
+
+    existing_memory
+        .iter()
+        .map(|item| normalize_for_memory_compare(&item.content))
+        .chain(
+            suggestions
+                .iter()
+                .map(|item| normalize_for_memory_compare(&item.content)),
+        )
+        .any(|existing| {
+            existing == normalized
+                || existing.contains(&normalized)
+                || normalized.contains(&existing)
+        })
+}
+
+fn normalize_for_memory_compare(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .filter(|character| character.is_alphanumeric() || character.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+async fn request_openai_text(instructions: &str, input: &str) -> Result<String, String> {
     let api_key = std::env::var("OPENAI_API_KEY")
         .map_err(|_| "Brakuje OPENAI_API_KEY w konfiguracji srodowiska.".to_string())?;
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
     let request = OpenAIResponsesRequest {
         model: &model,
-        instructions: CHAT_INSTRUCTIONS,
+        instructions,
         input,
     };
 
@@ -2396,6 +2808,7 @@ pub fn run() {
             get_conversation_messages,
             list_memory_records,
             create_memory_record,
+            save_memory_suggestion,
             update_memory_record,
             delete_memory_record,
             send_chat_message,
