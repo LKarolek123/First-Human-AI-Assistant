@@ -28,6 +28,8 @@ an existing feature changes behavior, update this file in the same change.
   context such as preferences, decisions, project facts, user facts, or working constraints.
 - Suggested memory is never saved automatically. The user must explicitly choose `Zapisz`; they can
   edit or reject each suggestion first.
+- Shows a quiet status under the relevant XO response when memory analysis completes but finds no
+  stable memory suggestion.
 
 ### Tool-Aware Chat Context
 
@@ -59,7 +61,9 @@ an existing feature changes behavior, update this file in the same change.
 
 - Provides local browser microphone recording controls.
 - Uses local speech-to-text support for Polish transcription.
-- Lets the user insert the latest transcript into the chat prompt.
+- Automatically stops recording after detecting speech followed by about 3 seconds of silence.
+- Automatically sends the transcribed voice message through the normal chat flow without requiring a
+  separate transcript confirmation button.
 
 ### Memory View
 
@@ -85,3 +89,4 @@ an existing feature changes behavior, update this file in the same change.
   instructions.
 - Discards suggestions that appear to contain secrets, health data, private data about third
   parties, duplicates, or temporary facts.
+- Logs memory-suggestion analysis status, counts, and rejection reasons for debugging.

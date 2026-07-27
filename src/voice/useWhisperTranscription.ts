@@ -15,6 +15,9 @@ type AutomaticSpeechRecognitionPipelineFactory = (
 const MODEL_ID = 'Xenova/whisper-tiny';
 const LANGUAGE = 'polish';
 const LOW_INPUT_LEVEL = 0.08;
+const SPEECH_INPUT_LEVEL = 0.12;
+const SILENCE_INPUT_LEVEL = 0.06;
+const AUTO_STOP_SILENCE_MS = 3000;
 
 let transcriberPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null;
 
@@ -33,6 +36,9 @@ export function useWhisperTranscription() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const peakInputLevelRef = useRef(0);
+  const heardSpeechRef = useRef(false);
+  const silenceStartedAtRef = useRef<number | null>(null);
+  const autoStopTriggeredRef = useRef(false);
   const [isSupported, setIsSupported] = useState(false);
   const [loadState, setLoadState] = useState<LoadState>('idle');
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
@@ -71,15 +77,40 @@ export function useWhisperTranscription() {
       source.connect(analyser);
       audioContextRef.current = audioContext;
       peakInputLevelRef.current = 0;
+      heardSpeechRef.current = false;
+      silenceStartedAtRef.current = null;
+      autoStopTriggeredRef.current = false;
       setPeakInputLevel(0);
 
       const tick = () => {
         analyser.getFloatTimeDomainData(samples);
 
         const level = getLevel(samples);
+        const now = performance.now();
         peakInputLevelRef.current = Math.max(peakInputLevelRef.current, level);
         setInputLevel(level);
         setPeakInputLevel(peakInputLevelRef.current);
+
+        if (level >= SPEECH_INPUT_LEVEL) {
+          heardSpeechRef.current = true;
+          silenceStartedAtRef.current = null;
+        } else if (heardSpeechRef.current && level <= SILENCE_INPUT_LEVEL) {
+          silenceStartedAtRef.current ??= now;
+
+          if (
+            !autoStopTriggeredRef.current &&
+            now - silenceStartedAtRef.current >= AUTO_STOP_SILENCE_MS
+          ) {
+            const recorder = mediaRecorderRef.current;
+            autoStopTriggeredRef.current = true;
+
+            if (recorder?.state === 'recording') {
+              recorder.stop();
+            }
+          }
+        } else {
+          silenceStartedAtRef.current = null;
+        }
 
         animationFrameRef.current = window.requestAnimationFrame(tick);
       };
@@ -149,6 +180,9 @@ export function useWhisperTranscription() {
     setError(null);
     setTranscript('');
     peakInputLevelRef.current = 0;
+    heardSpeechRef.current = false;
+    silenceStartedAtRef.current = null;
+    autoStopTriggeredRef.current = false;
     setPeakInputLevel(0);
 
     try {

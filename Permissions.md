@@ -78,7 +78,8 @@ update this file in the same change.
 
 - XO can request microphone access through the browser runtime when the user uses voice recording.
 - Audio is used for local transcription in the current app flow.
-- Voice transcript text can be inserted into a chat prompt by the user.
+- After speech followed by about 3 seconds of silence, XO can automatically send the local
+  transcript as a chat message through the Tauri backend.
 
 ### Explicit Memory
 
@@ -93,6 +94,8 @@ update this file in the same change.
 - XO validates model-returned suggestions in the Tauri backend before showing or saving them, and
   discards suggestions that appear to contain secrets, passwords, tokens, health data, private data
   about third parties, duplicate memory, or temporary facts.
+- XO may write diagnostic logs for memory-suggestion analysis status, counts, and rejection reasons,
+  but these logs avoid recording full suggestion content.
 
 ### Not Currently Allowed
 

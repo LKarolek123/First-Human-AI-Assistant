@@ -1,10 +1,11 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   type ChatMessage,
   type ConversationSummary,
   type MemoryCategory,
   type MemoryRecord,
   type MemorySuggestion,
+  type MemorySuggestionAnalysis,
   createMemoryRecord,
   deleteMemoryRecord,
   getConversationMessages,
@@ -129,11 +130,15 @@ export function App() {
   const [chatMemorySuggestions, setChatMemorySuggestions] = useState<
     Record<string, ChatMemorySuggestion[]>
   >({});
+  const [chatMemorySuggestionAnalyses, setChatMemorySuggestionAnalyses] = useState<
+    Record<string, MemorySuggestionAnalysis>
+  >({});
+  const autoSubmittedTranscriptRef = useRef('');
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
   const isBusy = isRecording || isTranscribing || loadState === 'loading';
-  const promptText = typedPrompt.trim() || transcript.trim();
+  const promptText = typedPrompt.trim();
   const canSend = promptText.length > 0 && chatState !== 'loading';
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
@@ -254,16 +259,7 @@ export function App() {
     };
   }, [activeConversationId]);
 
-  async function handleChatSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!promptText) {
-      setChatError('Wpisz wiadomosc albo uzyj transkrypcji z mikrofonu.');
-      return;
-    }
-
-    const input = promptText;
-
+  const submitChatInput = useCallback(async (input: string, restoreOnError = true) => {
     setTypedPrompt('');
     setChatError(null);
     setChatState('loading');
@@ -291,15 +287,55 @@ export function App() {
           error: null,
         })),
       }));
+      setChatMemorySuggestionAnalyses((currentAnalyses) => ({
+        ...currentAnalyses,
+        [response.assistant_message.id]: response.memory_suggestion_analysis,
+      }));
       setConversations((currentConversations) =>
         upsertConversation(currentConversations, response.conversation),
       );
+
+      return true;
     } catch (sendError) {
-      setTypedPrompt(input);
+      if (restoreOnError) {
+        setTypedPrompt(input);
+      }
       setChatError(getErrorMessage(sendError));
+
+      return false;
     } finally {
       setChatState('idle');
     }
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    const voiceInput = transcript.trim();
+
+    if (!voiceInput || recordingState !== 'idle' || chatState !== 'idle') {
+      return;
+    }
+
+    if (autoSubmittedTranscriptRef.current === voiceInput) {
+      return;
+    }
+
+    autoSubmittedTranscriptRef.current = voiceInput;
+    void submitChatInput(voiceInput, false).then((wasSent) => {
+      if (wasSent) {
+        resetTranscript();
+      }
+    });
+  }, [chatState, recordingState, resetTranscript, submitChatInput, transcript]);
+
+  async function handleChatSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!promptText) {
+      setChatError('Wpisz wiadomosc.');
+      return;
+    }
+
+    await submitChatInput(promptText);
   }
 
   function handleNewConversation() {
@@ -309,14 +345,24 @@ export function App() {
     setChatError(null);
   }
 
-  function handleUseTranscript() {
-    setTypedPrompt(transcript);
-    setChatError(null);
-  }
-
   function handleClearPrompt() {
     setTypedPrompt('');
     setChatError(null);
+  }
+
+  function handleVoiceButton() {
+    if (isRecording) {
+      stopRecording();
+      return;
+    }
+
+    autoSubmittedTranscriptRef.current = '';
+    void startRecording();
+  }
+
+  function handleResetTranscript() {
+    autoSubmittedTranscriptRef.current = '';
+    resetTranscript();
   }
 
   async function handleConnectGoogleCalendar() {
@@ -979,6 +1025,20 @@ export function App() {
                         ))}
                       </div>
                     )}
+                  {message.role === 'assistant' &&
+                    (chatMemorySuggestions[message.id] ?? []).length === 0 &&
+                    chatMemorySuggestionAnalyses[message.id] &&
+                    chatMemorySuggestionAnalyses[message.id].status !== 'found' && (
+                      <div
+                        className={
+                          chatMemorySuggestionAnalyses[message.id].status === 'error'
+                            ? 'memorySuggestionStatus memorySuggestionStatusError'
+                            : 'memorySuggestionStatus'
+                        }
+                      >
+                        {chatMemorySuggestionAnalyses[message.id].message}
+                      </div>
+                    )}
                 </div>
               ))
             ) : (
@@ -1007,20 +1067,12 @@ export function App() {
               className="promptInput"
               value={typedPrompt}
               onChange={(event) => setTypedPrompt(event.target.value)}
-              placeholder="Napisz do XO albo zostaw pole puste, zeby wyslac ostatnia transkrypcje."
+              placeholder="Napisz do XO albo uzyj nagrywania glosu, ktore wysle wiadomosc automatycznie po pauzie."
               rows={5}
             />
             <div className="promptActions">
               <button className="primaryButton" type="submit" disabled={!canSend}>
                 {chatState === 'loading' ? 'Wysylam' : 'Wyslij'}
-              </button>
-              <button
-                className="secondaryButton"
-                type="button"
-                onClick={handleUseTranscript}
-                disabled={!transcript || chatState === 'loading'}
-              >
-                Uzyj transkrypcji
               </button>
               <button className="secondaryButton" type="button" onClick={handleClearPrompt}>
                 Wyczysc prompt
@@ -1150,7 +1202,7 @@ export function App() {
           <button
             className={isRecording ? 'voiceButton voiceButtonActive' : 'voiceButton'}
             type="button"
-            onClick={isRecording ? stopRecording : startRecording}
+            onClick={handleVoiceButton}
             disabled={!isSupported || isTranscribing || loadState === 'loading'}
             aria-pressed={isRecording}
           >
@@ -1165,7 +1217,7 @@ export function App() {
           >
             {loadState === 'ready' ? 'Model gotowy' : 'Zaladuj model'}
           </button>
-          <button className="secondaryButton" type="button" onClick={resetTranscript}>
+          <button className="secondaryButton" type="button" onClick={handleResetTranscript}>
             Wyczysc
           </button>
         </div>
@@ -1188,7 +1240,8 @@ export function App() {
 
         <p className="voiceNotice">
           Model: {modelId}. Jesli transkrypcja pokazuje przypadkowy tekst, zwykle oznacza to za
-          cichy glos, tlo z glosnikow albo brak wyraznej mowy w nagraniu.
+          cichy glos, tlo z glosnikow albo brak wyraznej mowy w nagraniu. Po 3 sekundach ciszy XO
+          sam zakonczy nagranie i wysle przepisana wiadomosc.
         </p>
 
         {error && <p className="voiceError">{error}</p>}
@@ -1296,14 +1349,14 @@ function getTranscriptPlaceholder(recordingState: string, loadState: string) {
   }
 
   if (recordingState === 'recording') {
-    return 'Mow po polsku. Obserwuj pasek mikrofonu i kliknij Zatrzymaj, kiedy skonczysz.';
+    return 'Mow po polsku. Po 3 sekundach ciszy XO sam zakonczy nagranie i wysle wiadomosc.';
   }
 
   if (recordingState === 'transcribing') {
-    return 'Przepisuje nagranie na tekst...';
+    return 'Przepisuje nagranie i przygotowuje automatyczna wysylke...';
   }
 
-  return 'Kliknij Nagraj, powiedz cos po polsku, a XO przepisze nagranie lokalnym STT.';
+  return 'Kliknij Nagraj, powiedz cos po polsku, a XO wysle wiadomosc po wykryciu pauzy.';
 }
 
 function getLevelLabel(inputLevel: number, peakInputLevel: number) {

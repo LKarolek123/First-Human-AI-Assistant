@@ -69,6 +69,7 @@ struct ChatResponse {
     user_message: ChatMessage,
     assistant_message: ChatMessage,
     memory_suggestions: Vec<MemorySuggestion>,
+    memory_suggestion_analysis: MemorySuggestionAnalysis,
 }
 
 #[derive(Serialize)]
@@ -88,6 +89,12 @@ struct MemorySuggestion {
     category: String,
     content: String,
     reason: String,
+}
+
+#[derive(Serialize)]
+struct MemorySuggestionAnalysis {
+    status: String,
+    message: String,
 }
 
 #[derive(Deserialize)]
@@ -444,20 +451,69 @@ async fn send_chat_message(
             load_memory_records(&db)?,
         )
     };
-    let memory_suggestions =
-        match request_memory_suggestions(&input, &assistant_text, &existing_memory).await {
-            Ok(suggestions) => suggestions,
-            Err(error) => {
-                log::warn!("Memory suggestion analysis failed: {error}");
-                Vec::new()
-            }
-        };
+    log::info!(
+        "Starting memory suggestion analysis. conversation_id={}, user_chars={}, assistant_chars={}, existing_memory_count={}",
+        conversation_id,
+        input.chars().count(),
+        assistant_text.chars().count(),
+        existing_memory.len()
+    );
+    let (memory_suggestions, memory_suggestion_analysis) = match request_memory_suggestions(
+        &input,
+        &assistant_text,
+        &existing_memory,
+    )
+    .await
+    {
+        Ok(suggestions) => {
+            let analysis = if suggestions.is_empty() {
+                MemorySuggestionAnalysis {
+                    status: "empty".to_string(),
+                    message: "XO nie znalazl w tej odpowiedzi nic stabilnego do zapamietania."
+                        .to_string(),
+                }
+            } else {
+                MemorySuggestionAnalysis {
+                    status: "found".to_string(),
+                    message: format!(
+                        "XO znalazl {} sugestie pamieci do zatwierdzenia.",
+                        suggestions.len()
+                    ),
+                }
+            };
+
+            log::info!(
+                    "Memory suggestion analysis completed. conversation_id={}, status={}, suggestions={}",
+                    conversation_id,
+                    analysis.status,
+                    suggestions.len()
+                );
+
+            (suggestions, analysis)
+        }
+        Err(error) => {
+            log::warn!(
+                "Memory suggestion analysis failed. conversation_id={}, error={error}",
+                conversation_id
+            );
+
+            (
+                Vec::new(),
+                MemorySuggestionAnalysis {
+                    status: "error".to_string(),
+                    message: "XO nie mogl sprawdzic sugestii pamieci dla tej odpowiedzi."
+                        .to_string(),
+                },
+            )
+        }
+    };
 
     Ok(ChatResponse {
         conversation,
         user_message,
         assistant_message,
         memory_suggestions,
+        memory_suggestion_analysis,
     })
 }
 
@@ -2508,13 +2564,27 @@ async fn request_memory_suggestions(
     let response_text =
         request_openai_text(MEMORY_SUGGESTION_INSTRUCTIONS, &analysis_input).await?;
     let raw_suggestions = parse_memory_suggestions(&response_text)?;
+    let raw_count = raw_suggestions.len();
     let mut suggestions = Vec::new();
+    let mut rejected_count = 0_usize;
+
+    log::info!(
+        "Memory suggestion model returned raw suggestions. raw_count={raw_count}, response_chars={}",
+        response_text.chars().count()
+    );
 
     for raw in raw_suggestions {
         let Some(content) = raw.content.as_deref() else {
+            rejected_count += 1;
+            log::info!("Rejected memory suggestion: missing content.");
             continue;
         };
         let Some(category) = raw.category.as_deref() else {
+            rejected_count += 1;
+            log::info!(
+                "Rejected memory suggestion: missing category. content_chars={}",
+                content.chars().count()
+            );
             continue;
         };
         let Some(reason) = raw
@@ -2523,13 +2593,35 @@ async fn request_memory_suggestions(
             .map(str::trim)
             .filter(|value| !value.is_empty())
         else {
+            rejected_count += 1;
+            log::info!(
+                "Rejected memory suggestion: missing reason. category={}, content_chars={}",
+                category,
+                content.chars().count()
+            );
             continue;
         };
-        let Ok(suggestion) = validate_memory_suggestion(category, content, reason) else {
-            continue;
+        let suggestion = match validate_memory_suggestion(category, content, reason) {
+            Ok(suggestion) => suggestion,
+            Err(error) => {
+                rejected_count += 1;
+                log::info!(
+                    "Rejected memory suggestion: validation failed. category={}, reason={}, content_chars={}",
+                    category,
+                    error,
+                    content.chars().count()
+                );
+                continue;
+            }
         };
 
         if is_duplicate_memory_suggestion(&suggestion.content, existing_memory, &suggestions) {
+            rejected_count += 1;
+            log::info!(
+                "Rejected memory suggestion: duplicate. category={}, content_chars={}",
+                suggestion.category,
+                suggestion.content.chars().count()
+            );
             continue;
         }
 
@@ -2539,6 +2631,11 @@ async fn request_memory_suggestions(
             break;
         }
     }
+
+    log::info!(
+        "Memory suggestion filtering completed. raw_count={raw_count}, accepted_count={}, rejected_count={rejected_count}",
+        suggestions.len()
+    );
 
     Ok(suggestions)
 }

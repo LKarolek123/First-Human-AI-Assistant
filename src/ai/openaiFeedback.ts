@@ -21,6 +21,7 @@ export type ChatResponse = {
   user_message: ChatMessage;
   assistant_message: ChatMessage;
   memory_suggestions: MemorySuggestion[];
+  memory_suggestion_analysis: MemorySuggestionAnalysis;
 };
 
 export type MemoryCategory =
@@ -46,6 +47,11 @@ export type MemorySuggestion = {
   category: Exclude<MemoryCategory, 'tool_note'>;
   content: string;
   reason: string;
+};
+
+export type MemorySuggestionAnalysis = {
+  status: 'found' | 'empty' | 'error';
+  message: string;
 };
 
 export type SendChatMessageRequest = {
