@@ -69,8 +69,11 @@ update this file in the same change.
 ### Voice And Microphone
 
 - XO can request microphone access through the browser runtime when the user uses voice recording.
+- Audio is captured from the browser microphone with requested echo cancellation, noise suppression,
+  automatic gain control, and mono input where supported.
 - Audio is used for local transcription in the current app flow.
 - Voice transcript text can be inserted into a chat prompt by the user.
+- The selected local Whisper model is stored in local browser storage.
 
 ### Explicit Memory
 

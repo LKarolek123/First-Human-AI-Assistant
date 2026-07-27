@@ -390,6 +390,61 @@ h1 {
   outline: 3px solid rgb(47 143 101 / 16%);
 }
 
+.inlineVoicePanel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.inlineVoiceHeader {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.inlineVoiceHeader strong {
+  display: block;
+  color: #17201d;
+  margin-bottom: 4px;
+}
+
+.inlineVoiceHeader p {
+  margin: 0;
+  color: #56625d;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.voiceModelField {
+  display: grid;
+  gap: 7px;
+}
+
+.voiceModelField span {
+  color: #25312d;
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+
+.voiceModelField select {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #c8cec9;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #25312d;
+}
+
+.voiceModelField select:focus {
+  border-color: #2f8f65;
+  outline: 3px solid rgb(47 143 101 / 16%);
+}
+
 .promptActions {
   display: flex;
   flex-wrap: wrap;
@@ -824,6 +879,7 @@ h1 {
   }
 
   .voiceHeader,
+  .inlineVoiceHeader,
   .railHeader {
     align-items: flex-start;
     flex-direction: column;

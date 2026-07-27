@@ -28,7 +28,11 @@ import {
   listPluginConnections,
   saveGoogleCalendarClientId,
 } from './integrations/plugins';
-import { useWhisperTranscription } from './voice/useWhisperTranscription';
+import {
+  type WhisperModelId,
+  useWhisperTranscription,
+  whisperModelOptions,
+} from './voice/useWhisperTranscription';
 
 const memoryAspects = [
   {
@@ -85,6 +89,7 @@ export function App() {
     peakInputLevel,
     recordingState,
     resetTranscript,
+    setModelId,
     startRecording,
     stopRecording,
     transcript,
@@ -286,12 +291,13 @@ export function App() {
   }
 
   function handleUseTranscript() {
-    setTypedPrompt(transcript);
+    setTypedPrompt((currentPrompt) => `${currentPrompt} ${transcript}`.trim());
     setChatError(null);
   }
 
   function handleClearPrompt() {
     setTypedPrompt('');
+    resetTranscript();
     setChatError(null);
   }
 
@@ -789,20 +795,98 @@ export function App() {
               className="promptInput"
               value={typedPrompt}
               onChange={(event) => setTypedPrompt(event.target.value)}
-              placeholder="Napisz do XO albo zostaw pole puste, zeby wyslac ostatnia transkrypcje."
+              placeholder="Napisz do XO albo nagraj wiadomosc mikrofonem."
               rows={5}
             />
+
+            <div className="inlineVoicePanel" aria-label="Glosowe wejscie czatu">
+              <div className="inlineVoiceHeader">
+                <div>
+                  <strong>{getVoiceButtonLabel(recordingState, loadState)}</strong>
+                  <p>{getTranscriptPlaceholder(recordingState, loadState)}</p>
+                </div>
+                <span className="languageBadge">{modelId}</span>
+              </div>
+
+              <label className="voiceModelField">
+                <span>Model glosowy</span>
+                <select
+                  value={modelId}
+                  onChange={(event) => setModelId(event.target.value as WhisperModelId)}
+                  disabled={isRecording || isTranscribing || loadState === 'loading'}
+                >
+                  {whisperModelOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label} - {option.description}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="voiceControls">
+                <button
+                  className={isRecording ? 'voiceButton voiceButtonActive' : 'voiceButton'}
+                  type="button"
+                  onClick={isRecording ? stopRecording : startRecording}
+                  disabled={!isSupported || isTranscribing || loadState === 'loading' || chatState === 'loading'}
+                  aria-pressed={isRecording}
+                >
+                  <span className="micIcon" aria-hidden="true" />
+                  {isRecording ? 'Zatrzymaj' : 'Dyktuj'}
+                </button>
+                <button
+                  className="secondaryButton"
+                  type="button"
+                  onClick={loadModel}
+                  disabled={!isSupported || loadState === 'loading' || loadState === 'ready'}
+                >
+                  {loadState === 'ready' ? 'Model gotowy' : 'Zaladuj model'}
+                </button>
+                <button
+                  className="secondaryButton"
+                  type="button"
+                  onClick={handleUseTranscript}
+                  disabled={!transcript || chatState === 'loading'}
+                >
+                  Wstaw tekst
+                </button>
+                <button className="secondaryButton" type="button" onClick={resetTranscript}>
+                  Wyczysc glos
+                </button>
+              </div>
+
+              <div className="meterPanel" aria-label="Poziom mikrofonu">
+                <div className="meterHeader">
+                  <span>Poziom mikrofonu</span>
+                  <span>{getLevelLabel(inputLevel, peakInputLevel)}</span>
+                </div>
+                <div className="meterTrack">
+                  <span className="meterFill" style={{ width: `${Math.round(inputLevel * 100)}%` }} />
+                </div>
+              </div>
+
+              {!isSupported && (
+                <p className="voiceNotice">
+                  Ta przegladarka nie udostepnia nagrywania audio przez MediaRecorder.
+                </p>
+              )}
+
+              {error && <p className="voiceError">{error}</p>}
+
+              {(transcript || isBusy) && (
+                <div className={isBusy ? 'transcriptBox transcriptBoxBusy' : 'transcriptBox'} aria-live="polite">
+                  {transcript ? (
+                    <p>{transcript}</p>
+                  ) : (
+                    <p className="placeholderText">{getTranscriptPlaceholder(recordingState, loadState)}</p>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="promptActions">
               <button className="primaryButton" type="submit" disabled={!canSend}>
                 {chatState === 'loading' ? 'Wysylam' : 'Wyslij'}
-              </button>
-              <button
-                className="secondaryButton"
-                type="button"
-                onClick={handleUseTranscript}
-                disabled={!transcript || chatState === 'loading'}
-              >
-                Uzyj transkrypcji
               </button>
               <button className="secondaryButton" type="button" onClick={handleClearPrompt}>
                 Wyczysc prompt
@@ -919,70 +1003,6 @@ export function App() {
         )}
       </section>
 
-      <section className="voicePanel" aria-labelledby="voice-heading">
-        <div className="voiceHeader">
-          <div>
-            <p className="eyebrow">Voice First</p>
-            <h2 id="voice-heading">Lokalne STT</h2>
-          </div>
-          <span className="languageBadge">pl-PL</span>
-        </div>
-
-        <div className="voiceControls">
-          <button
-            className={isRecording ? 'voiceButton voiceButtonActive' : 'voiceButton'}
-            type="button"
-            onClick={isRecording ? stopRecording : startRecording}
-            disabled={!isSupported || isTranscribing || loadState === 'loading'}
-            aria-pressed={isRecording}
-          >
-            <span className="micIcon" aria-hidden="true" />
-            {getVoiceButtonLabel(recordingState, loadState)}
-          </button>
-          <button
-            className="secondaryButton"
-            type="button"
-            onClick={loadModel}
-            disabled={!isSupported || loadState === 'loading' || loadState === 'ready'}
-          >
-            {loadState === 'ready' ? 'Model gotowy' : 'Zaladuj model'}
-          </button>
-          <button className="secondaryButton" type="button" onClick={resetTranscript}>
-            Wyczysc
-          </button>
-        </div>
-
-        <div className="meterPanel" aria-label="Poziom mikrofonu">
-          <div className="meterHeader">
-            <span>Poziom mikrofonu</span>
-            <span>{getLevelLabel(inputLevel, peakInputLevel)}</span>
-          </div>
-          <div className="meterTrack">
-            <span className="meterFill" style={{ width: `${Math.round(inputLevel * 100)}%` }} />
-          </div>
-        </div>
-
-        {!isSupported && (
-          <p className="voiceNotice">
-            Ta przegladarka nie udostepnia nagrywania audio przez MediaRecorder.
-          </p>
-        )}
-
-        <p className="voiceNotice">
-          Model: {modelId}. Jesli transkrypcja pokazuje przypadkowy tekst, zwykle oznacza to za
-          cichy glos, tlo z glosnikow albo brak wyraznej mowy w nagraniu.
-        </p>
-
-        {error && <p className="voiceError">{error}</p>}
-
-        <div className={isBusy ? 'transcriptBox transcriptBoxBusy' : 'transcriptBox'} aria-live="polite">
-          {transcript ? (
-            <p>{transcript}</p>
-          ) : (
-            <p className="placeholderText">{getTranscriptPlaceholder(recordingState, loadState)}</p>
-          )}
-        </div>
-      </section>
     </main>
   );
 }
