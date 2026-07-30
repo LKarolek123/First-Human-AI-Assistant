@@ -190,6 +190,10 @@ h1 {
   color: #17201d;
 }
 
+.chatModeTabs {
+  max-width: 360px;
+}
+
 .pluginsPanel {
   display: grid;
   gap: 10px;
@@ -397,6 +401,318 @@ h1 {
   border: 1px solid #d8d4cb;
   border-radius: 8px;
   background: #fffdf8;
+}
+
+.voiceCallPanel {
+  display: grid;
+  gap: 14px;
+  max-width: 460px;
+  padding: 16px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.voiceCallPanel h3 {
+  margin: 0 0 8px;
+  color: #17201d;
+  font-size: 1.35rem;
+}
+
+.voiceCallPanel p {
+  margin-bottom: 0;
+  color: #56625d;
+  line-height: 1.45;
+}
+
+.voiceCallPreview {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid #e0ddd6;
+  border-radius: 8px;
+  background: #f8fbf9;
+}
+
+.voiceCallPreview strong,
+.voiceCallPreview span {
+  display: block;
+}
+
+.voiceCallPreview strong {
+  color: #17201d;
+}
+
+.voiceCallPreview span {
+  color: #66736d;
+  font-size: 0.9rem;
+}
+
+.voiceMiniOrb {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border: 1px solid #cfd5d2;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 55% 45%, rgb(120 130 126 / 42%), transparent 42%),
+    #eef0ee;
+  box-shadow: inset 0 0 18px rgb(37 49 45 / 11%);
+}
+
+.voiceCallOverlay {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  justify-items: end;
+  align-items: center;
+  padding: 24px clamp(18px, 4vw, 56px);
+  background: rgb(24 33 31 / 18%);
+  backdrop-filter: blur(6px);
+}
+
+.voiceCallDock {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(320px, 460px);
+  gap: 14px;
+  align-items: stretch;
+  width: min(760px, 100%);
+}
+
+.voiceModelWindow,
+.voiceTranscriptWindow {
+  display: grid;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #fffdf8;
+  box-shadow: 0 24px 80px rgb(25 31 28 / 18%);
+}
+
+.voiceModelWindow {
+  align-content: center;
+  justify-items: center;
+  gap: 16px;
+  padding: 20px;
+  text-align: center;
+}
+
+.voiceTranscriptWindow {
+  align-content: start;
+  gap: 14px;
+  min-height: 420px;
+  padding: 20px;
+}
+
+.voiceTranscriptWindow h3 {
+  margin: 0;
+  color: #17201d;
+  font-size: 1.3rem;
+}
+
+.voiceCallModalCopy h3 {
+  margin: 0 0 6px;
+  color: #17201d;
+  font-size: 1.45rem;
+}
+
+.voiceCallModalCopy p {
+  margin: 0;
+  color: #56625d;
+  font-size: 0.92rem;
+}
+
+.voiceCallTranscript {
+  display: grid;
+  gap: 10px;
+  min-height: 300px;
+  padding: 12px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #f8fbf9;
+}
+
+.voiceCallTranscriptHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #17201d;
+  font-size: 0.92rem;
+}
+
+.voiceCallTranscriptHeader span {
+  color: #66736d;
+  font-weight: 700;
+}
+
+.voiceCallTranscriptLines {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  max-height: 310px;
+  overflow: auto;
+}
+
+.voiceTranscriptLine {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #e2e6e4;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #25312d;
+  line-height: 1.4;
+}
+
+.voiceTranscriptLine strong {
+  color: #4d6b5f;
+  font-size: 0.82rem;
+}
+
+.voiceTranscriptLine span {
+  white-space: pre-wrap;
+}
+
+.voiceTranscriptLine-assistant {
+  border-color: #c9dceb;
+  background: #f4faff;
+}
+
+.voiceTranscriptLine-user {
+  border-color: #cad7d1;
+  background: #eef6f1;
+}
+
+.voiceOrb {
+  position: relative;
+  display: grid;
+  width: 132px;
+  height: 132px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #d3d8d5;
+  border-radius: 999px;
+  background: #eef0ee;
+  box-shadow: inset 0 0 34px rgb(37 49 45 / 10%);
+}
+
+.voiceOrbMist,
+.voiceOrbCore {
+  position: absolute;
+  border-radius: 999px;
+}
+
+.voiceOrbMist {
+  inset: 14px;
+  background: rgb(131 139 136 / 28%);
+  filter: blur(12px);
+  transform: scale(0.86);
+}
+
+.voiceOrbMistTwo {
+  inset: 28px 18px 18px 30px;
+  background: rgb(98 108 104 / 22%);
+  transform: scale(1);
+}
+
+.voiceOrbCore {
+  width: 42px;
+  height: 42px;
+  background: #9ba4a0;
+  box-shadow: 0 0 30px rgb(86 98 93 / 24%);
+}
+
+.voiceOrbActive {
+  border-color: #7bb7df;
+  background: #e9f5ff;
+  box-shadow:
+    inset 0 0 38px rgb(38 123 184 / 16%),
+    0 0 34px rgb(62 145 204 / 20%);
+}
+
+.voiceOrbActive .voiceOrbMist {
+  background: rgb(87 160 215 / 34%);
+  animation: voiceMistPulse 1.8s ease-in-out infinite;
+}
+
+.voiceOrbActive .voiceOrbMistTwo {
+  background: rgb(25 112 184 / 26%);
+  animation-delay: 450ms;
+}
+
+.voiceOrbActive .voiceOrbCore {
+  background: #2f8bd0;
+  box-shadow: 0 0 42px rgb(47 139 208 / 44%);
+}
+
+.voiceCallSettings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.voiceCallActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.voiceCallStatus {
+  color: #56625d;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.voiceSavePrompt {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #d8d4cb;
+  border-radius: 8px;
+  background: #f8fbf9;
+  text-align: left;
+}
+
+.voiceSavePrompt p {
+  margin: 0;
+  color: #25312d;
+  font-size: 0.95rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.voiceSaveActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.voiceSaveButton {
+  min-height: 40px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #fffdf8;
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.voiceSaveButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.voiceSaveButtonNo {
+  border-color: #8f2532;
+  background: #b73b4a;
+}
+
+.voiceSaveButtonYes {
+  border-color: #1f6747;
+  background: #2f8f65;
 }
 
 .inlineVoiceHeader {
@@ -938,6 +1254,19 @@ h1 {
   color: #46524e;
 }
 
+@keyframes voiceMistPulse {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(0.82);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
 @media (max-width: 900px) {
   .hero,
   .chatPanel,
@@ -970,6 +1299,19 @@ h1 {
   .assistantHeader {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .voiceCallSettings {
+    grid-template-columns: 1fr;
+  }
+
+  .voiceCallDock {
+    grid-template-columns: 1fr;
+    max-width: 460px;
+  }
+
+  .voiceTranscriptWindow {
+    min-height: 320px;
   }
 
   .memoryRecord {

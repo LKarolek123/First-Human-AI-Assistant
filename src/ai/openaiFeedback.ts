@@ -24,6 +24,16 @@ export type ChatResponse = {
   memory_suggestion_analysis: MemorySuggestionAnalysis;
 };
 
+export type VoiceCallHistoryLine = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+export type VoiceCallHistoryResponse = {
+  conversation: ConversationSummary;
+  messages: ChatMessage[];
+};
+
 export type MemoryCategory =
   | 'user_fact'
   | 'preference'
@@ -81,6 +91,14 @@ export async function getConversationMessages(conversationId: string) {
   }
 
   return invoke<ChatMessage[]>('get_conversation_messages', { conversationId });
+}
+
+export async function saveVoiceCallHistory(lines: VoiceCallHistoryLine[]) {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(getTauriOnlyMessage());
+  }
+
+  return invoke<VoiceCallHistoryResponse>('save_voice_call_history', { lines });
 }
 
 export async function listMemoryRecords() {

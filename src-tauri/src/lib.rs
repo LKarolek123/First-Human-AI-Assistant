@@ -72,6 +72,18 @@ struct ChatResponse {
     memory_suggestion_analysis: MemorySuggestionAnalysis,
 }
 
+#[derive(Deserialize)]
+struct VoiceCallHistoryLine {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct VoiceCallHistoryResponse {
+    conversation: ConversationSummary,
+    messages: Vec<ChatMessage>,
+}
+
 #[derive(Serialize)]
 struct MemoryRecord {
     id: String,
@@ -327,6 +339,55 @@ fn get_conversation_messages(
         .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
 
     load_messages(&db, &conversation_id)
+}
+
+#[tauri::command]
+fn save_voice_call_history(
+    lines: Vec<VoiceCallHistoryLine>,
+    state: State<'_, AppState>,
+) -> Result<VoiceCallHistoryResponse, String> {
+    let sanitized_lines: Vec<(String, String)> = lines
+        .into_iter()
+        .filter_map(|line| {
+            let role = line.role.trim();
+            let content = line.content.trim();
+
+            if content.is_empty() || (role != "user" && role != "assistant") {
+                return None;
+            }
+
+            Some((role.to_string(), content.to_string()))
+        })
+        .collect();
+
+    if sanitized_lines.is_empty() {
+        return Err("Brak tresci rozmowy glosowej do zapisania.".to_string());
+    }
+
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+    let now = unix_timestamp();
+    let conversation_id = create_id("chat");
+    let title = normalize_title("Rozmowa glosowa");
+
+    db.execute(
+        "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+        params![conversation_id, title, now, now],
+    )
+    .map_err(|error| format!("Nie udalo sie utworzyc rozmowy glosowej. {error}"))?;
+
+    let mut messages = Vec::new();
+
+    for (role, content) in sanitized_lines {
+        messages.push(insert_message(&db, &conversation_id, &role, &content)?);
+    }
+
+    Ok(VoiceCallHistoryResponse {
+        conversation: load_conversation(&db, &conversation_id)?,
+        messages,
+    })
 }
 
 #[tauri::command]
@@ -2903,6 +2964,7 @@ pub fn run() {
             list_conversations,
             create_conversation,
             get_conversation_messages,
+            save_voice_call_history,
             list_memory_records,
             create_memory_record,
             save_memory_suggestion,

@@ -12,6 +12,7 @@ import {
   listConversations,
   listMemoryRecords,
   saveMemorySuggestion,
+  saveVoiceCallHistory,
   sendChatMessage,
   updateMemoryRecord,
 } from './ai/openaiFeedback';
@@ -81,12 +82,33 @@ const memoryCategories: Array<{ value: MemoryCategory; label: string }> = [
   { value: 'privacy', label: 'Prywatnosc' },
 ];
 
+const realtimeModelOptions = [
+  { value: 'gpt-realtime-mini', label: 'gpt-realtime-mini' },
+  { value: 'gpt-realtime', label: 'gpt-realtime' },
+] as const;
+
+const realtimeEffortOptions = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+] as const;
+
 type ChatMemorySuggestion = MemorySuggestion & {
   draftCategory: MemorySuggestion['category'];
   draftContent: string;
   isEditing: boolean;
   status: 'pending' | 'saving' | 'saved';
   error: string | null;
+};
+
+type ChatInputMode = 'voice' | 'voiceText';
+type RealtimeModelId = (typeof realtimeModelOptions)[number]['value'];
+type RealtimeEffort = (typeof realtimeEffortOptions)[number]['value'];
+type VoiceCallStatus = 'idle' | 'calling' | 'saving';
+type VoiceCallTranscriptLine = {
+  id: string;
+  speaker: 'system' | 'user' | 'assistant';
+  text: string;
 };
 
 export function App() {
@@ -125,6 +147,13 @@ export function App() {
   const [hasGoogleClientId, setHasGoogleClientId] = useState(false);
   const [hasGoogleClientSecret, setHasGoogleClientSecret] = useState(false);
   const [activeWorkspaceView, setActiveWorkspaceView] = useState<'chat' | 'memory'>('chat');
+  const [activeChatMode, setActiveChatMode] = useState<ChatInputMode>('voiceText');
+  const [voiceCallStatus, setVoiceCallStatus] = useState<VoiceCallStatus>('idle');
+  const [realtimeModelId, setRealtimeModelId] = useState<RealtimeModelId>('gpt-realtime-mini');
+  const [realtimeEffort, setRealtimeEffort] = useState<RealtimeEffort>('medium');
+  const [voiceCallTranscriptLines, setVoiceCallTranscriptLines] = useState<
+    VoiceCallTranscriptLine[]
+  >([]);
   const [memoryRecords, setMemoryRecords] = useState<MemoryRecord[]>([]);
   const [memoryCategory, setMemoryCategory] = useState<MemoryCategory>('preference');
   const [memoryContent, setMemoryContent] = useState('');
@@ -138,6 +167,8 @@ export function App() {
   const [chatMemorySuggestionAnalyses, setChatMemorySuggestionAnalyses] = useState<
     Record<string, MemorySuggestionAnalysis>
   >({});
+
+  const [shouldAskToSaveVoiceCall, setShouldAskToSaveVoiceCall] = useState(false);
   const autoSubmittedTranscriptRef = useRef('');
 
   const isRecording = recordingState === 'recording';
@@ -145,6 +176,11 @@ export function App() {
   const isBusy = isRecording || isTranscribing || loadState === 'loading';
   const promptText = typedPrompt.trim();
   const canSend = promptText.length > 0 && chatState !== 'loading';
+
+  const hasVoiceCallHistory = voiceCallTranscriptLines.some(
+    (line) => line.speaker === 'user' || line.speaker === 'assistant',
+  );
+
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [activeConversationId, conversations],
@@ -369,6 +405,72 @@ export function App() {
   function handleResetTranscript() {
     autoSubmittedTranscriptRef.current = '';
     resetTranscript();
+  }
+
+  function handleVoiceCallDisconnect() {
+    if (!hasVoiceCallHistory) {
+      setVoiceCallStatus('idle');
+      setVoiceCallTranscriptLines([]);
+      setShouldAskToSaveVoiceCall(false);
+      return;
+    }
+
+    setShouldAskToSaveVoiceCall(true);
+  }
+
+  async function handleSaveVoiceCallHistory() {
+    setVoiceCallStatus('saving');
+
+    try {
+      const historyLines = voiceCallTranscriptLines
+        .filter((line) => line.speaker === 'user' || line.speaker === 'assistant')
+        .map((line) => ({
+          role: line.speaker as 'user' | 'assistant',
+          content: line.text,
+        }));
+      const response = await saveVoiceCallHistory(historyLines);
+
+      setConversations((currentConversations) =>
+        upsertConversation(currentConversations, response.conversation),
+      );
+      setActiveConversationId(response.conversation.id);
+      setMessages(response.messages);
+      setChatError(null);
+      setShouldAskToSaveVoiceCall(false);
+      setVoiceCallTranscriptLines([]);
+      setVoiceCallStatus('idle');
+    } catch (saveError) {
+      setChatError(getErrorMessage(saveError));
+      setVoiceCallStatus('calling');
+      console.log(saveError);
+    }
+  }
+
+  function handleDiscardVoiceCallHistory() {
+    setShouldAskToSaveVoiceCall(false);
+    setVoiceCallStatus('idle');
+    setVoiceCallTranscriptLines([]);
+  }
+
+  async function handleVoiceCallToggle() {
+    if (voiceCallStatus === 'calling') {
+      handleVoiceCallDisconnect();
+      return;
+    }
+
+    setShouldAskToSaveVoiceCall(false);
+    setVoiceCallStatus('calling');
+    setVoiceCallTranscriptLines([
+      {
+        id: crypto.randomUUID(),
+        speaker: 'system',
+        text: 'Dzwonienie. Transkrypcja live pojawi sie tutaj po podlaczeniu Realtime.',
+      },
+    ]);
+    console.log('dzwonienie', {
+      model: realtimeModelId,
+      effort: realtimeEffort,
+    });
   }
 
   async function handleConnectGoogleCalendar() {
@@ -927,6 +1029,23 @@ export function App() {
             <span className="languageBadge">{chatState === 'loading' ? 'typing' : 'memory on'}</span>
           </div>
 
+          <div className="workspaceTabs chatModeTabs" aria-label="Tryb chatu">
+            <button
+              className={activeChatMode === 'voice' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
+              type="button"
+              onClick={() => setActiveChatMode('voice')}
+            >
+              Glos
+            </button>
+            <button
+              className={activeChatMode === 'voiceText' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
+              type="button"
+              onClick={() => setActiveChatMode('voiceText')}
+            >
+              Glos + tekst
+            </button>
+          </div>
+
           <div className="messageList" aria-live="polite">
             {messages.length > 0 ? (
               messages.map((message) => (
@@ -1065,104 +1184,251 @@ export function App() {
           {chatError && <p className="voiceError">{chatError}</p>}
 
           <form className="promptForm" onSubmit={handleChatSubmit}>
-            <label className="promptLabel" htmlFor="prompt">
-              Twoja wiadomosc
-            </label>
-            <textarea
-              id="prompt"
-              className="promptInput"
-              value={typedPrompt}
-              onChange={(event) => setTypedPrompt(event.target.value)}
-              placeholder="Napisz do XO albo uzyj nagrywania glosu, ktore wysle wiadomosc automatycznie po pauzie."
-              rows={5}
-            />
-
-            <div className="inlineVoicePanel" aria-label="Glosowe wejscie czatu">
-              <div className="inlineVoiceHeader">
+            {activeChatMode === 'voice' ? (
+              <section className="voiceCallPanel" aria-label="Chat glosowy">
                 <div>
-                  <strong>{getVoiceButtonLabel(recordingState, loadState)}</strong>
-                  <p>{getTranscriptPlaceholder(recordingState, loadState)}</p>
+                  <p className="eyebrow">Realtime voice</p>
+                  <h3>Chat glosowy</h3>
+                  <p>Wybierz ustawienia i otworz male okienko rozmowy.</p>
                 </div>
-                <span className="languageBadge">{modelId}</span>
-              </div>
 
-              <label className="voiceModelField">
-                <span>Model glosowy</span>
-                <select
-                  value={modelId}
-                  onChange={(event) => setModelId(event.target.value as WhisperModelId)}
-                  disabled={isRecording || isTranscribing || loadState === 'loading'}
-                >
-                  {whisperModelOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label} - {option.description}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="voiceControls">
-                <button
-                  className={isRecording ? 'voiceButton voiceButtonActive' : 'voiceButton'}
-                  type="button"
-                  onClick={handleVoiceButton}
-                  disabled={!isSupported || isTranscribing || loadState === 'loading' || chatState === 'loading'}
-                  aria-pressed={isRecording}
-                >
-                  <span className="micIcon" aria-hidden="true" />
-                  {isRecording ? 'Zatrzymaj' : 'Dyktuj'}
-                </button>
-                <button
-                  className="secondaryButton"
-                  type="button"
-                  onClick={loadModel}
-                  disabled={!isSupported || loadState === 'loading' || loadState === 'ready'}
-                >
-                  {loadState === 'ready' ? 'Model gotowy' : 'Zaladuj model'}
-                </button>
-                <button className="secondaryButton" type="button" onClick={handleResetTranscript}>
-                  Wyczysc glos
-                </button>
-              </div>
-
-              <div className="meterPanel" aria-label="Poziom mikrofonu">
-                <div className="meterHeader">
-                  <span>Poziom mikrofonu</span>
-                  <span>{getLevelLabel(inputLevel, peakInputLevel)}</span>
+                <div className="voiceCallPreview" aria-hidden="true">
+                  <span className="voiceMiniOrb" />
+                  <div>
+                    <strong>{voiceCallStatus === 'saving' ? 'Zapisuje rozmowe' : 'Gotowy'}</strong>
+                    <span>Status: {voiceCallStatus === 'saving' ? 'zapisywanie' : 'bez polaczenia'}</span>
+                  </div>
                 </div>
-                <div className="meterTrack">
-                  <span className="meterFill" style={{ width: `${Math.round(inputLevel * 100)}%` }} />
+
+                <div className="voiceCallSettings">
+                  <label className="voiceModelField">
+                    <span>Model</span>
+                    <select
+                      value={realtimeModelId}
+                      onChange={(event) => setRealtimeModelId(event.target.value as RealtimeModelId)}
+                      disabled={voiceCallStatus === 'calling'}
+                    >
+                      {realtimeModelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="voiceModelField">
+                    <span>Effort</span>
+                    <select
+                      value={realtimeEffort}
+                      onChange={(event) => setRealtimeEffort(event.target.value as RealtimeEffort)}
+                      disabled={voiceCallStatus === 'calling'}
+                    >
+                      {realtimeEffortOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
-              </div>
 
-              {!isSupported && (
-                <p className="voiceNotice">
-                  Ta przegladarka nie udostepnia nagrywania audio przez MediaRecorder.
-                </p>
-              )}
+                <div className="voiceCallActions">
+                  <button
+                    className={
+                      voiceCallStatus !== 'idle'
+                        ? 'voiceButton voiceButtonActive'
+                        : 'voiceButton'
+                    }
+                    type="button"
+                    onClick={handleVoiceCallToggle}
+                    disabled={voiceCallStatus === 'saving'}
+                    aria-pressed={voiceCallStatus !== 'idle'}
+                  >
+                    <span className="micIcon" aria-hidden="true" />
+                    {voiceCallStatus === 'saving' ? 'Zapisuje' : 'Zadzwon'}
+                  </button>
+                  <span className="voiceCallStatus">
+                    Backend Realtime nie jest jeszcze podlaczony.
+                  </span>
+                </div>
+              </section>
+            ) : (
+              <>
+                <label className="promptLabel" htmlFor="prompt">
+                  Twoja wiadomosc
+                </label>
+                <textarea
+                  id="prompt"
+                  className="promptInput"
+                  value={typedPrompt}
+                  onChange={(event) => setTypedPrompt(event.target.value)}
+                  placeholder="Napisz do XO albo uzyj nagrywania glosu, ktore wysle wiadomosc automatycznie po pauzie."
+                  rows={5}
+                />
 
-              {error && <p className="voiceError">{error}</p>}
+                <div className="inlineVoicePanel" aria-label="Glosowe wejscie czatu">
+                  <div className="inlineVoiceHeader">
+                    <div>
+                      <strong>{getVoiceButtonLabel(recordingState, loadState)}</strong>
+                      <p>{getTranscriptPlaceholder(recordingState, loadState)}</p>
+                    </div>
+                    <span className="languageBadge">{modelId}</span>
+                  </div>
 
-              {(transcript || isBusy) && (
-                <div className={isBusy ? 'transcriptBox transcriptBoxBusy' : 'transcriptBox'} aria-live="polite">
-                  {transcript ? (
-                    <p>{transcript}</p>
-                  ) : (
-                    <p className="placeholderText">{getTranscriptPlaceholder(recordingState, loadState)}</p>
+                  <label className="voiceModelField">
+                    <span>Model glosowy</span>
+                    <select
+                      value={modelId}
+                      onChange={(event) => setModelId(event.target.value as WhisperModelId)}
+                      disabled={isRecording || isTranscribing || loadState === 'loading'}
+                    >
+                      {whisperModelOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label} - {option.description}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div className="voiceControls">
+                    <button
+                      className={isRecording ? 'voiceButton voiceButtonActive' : 'voiceButton'}
+                      type="button"
+                      onClick={handleVoiceButton}
+                      disabled={!isSupported || isTranscribing || loadState === 'loading' || chatState === 'loading'}
+                      aria-pressed={isRecording}
+                    >
+                      <span className="micIcon" aria-hidden="true" />
+                      {isRecording ? 'Zatrzymaj' : 'Dyktuj'}
+                    </button>
+                    <button
+                      className="secondaryButton"
+                      type="button"
+                      onClick={loadModel}
+                      disabled={!isSupported || loadState === 'loading' || loadState === 'ready'}
+                    >
+                      {loadState === 'ready' ? 'Model gotowy' : 'Zaladuj model'}
+                    </button>
+                    <button className="secondaryButton" type="button" onClick={handleResetTranscript}>
+                      Wyczysc glos
+                    </button>
+                  </div>
+
+                  <div className="meterPanel" aria-label="Poziom mikrofonu">
+                    <div className="meterHeader">
+                      <span>Poziom mikrofonu</span>
+                      <span>{getLevelLabel(inputLevel, peakInputLevel)}</span>
+                    </div>
+                    <div className="meterTrack">
+                      <span className="meterFill" style={{ width: `${Math.round(inputLevel * 100)}%` }} />
+                    </div>
+                  </div>
+
+                  {!isSupported && (
+                    <p className="voiceNotice">
+                      Ta przegladarka nie udostepnia nagrywania audio przez MediaRecorder.
+                    </p>
+                  )}
+
+                  {error && <p className="voiceError">{error}</p>}
+
+                  {(transcript || isBusy) && (
+                    <div className={isBusy ? 'transcriptBox transcriptBoxBusy' : 'transcriptBox'} aria-live="polite">
+                      {transcript ? (
+                        <p>{transcript}</p>
+                      ) : (
+                        <p className="placeholderText">{getTranscriptPlaceholder(recordingState, loadState)}</p>
+                      )}
+                    </div>
                   )}
                 </div>
-              )}
-            </div>
 
-            <div className="promptActions">
-              <button className="primaryButton" type="submit" disabled={!canSend}>
-                {chatState === 'loading' ? 'Wysylam' : 'Wyslij'}
-              </button>
-              <button className="secondaryButton" type="button" onClick={handleClearPrompt}>
-                Wyczysc prompt
-              </button>
-            </div>
+                <div className="promptActions">
+                  <button className="primaryButton" type="submit" disabled={!canSend}>
+                    {chatState === 'loading' ? 'Wysylam' : 'Wyslij'}
+                  </button>
+                  <button className="secondaryButton" type="button" onClick={handleClearPrompt}>
+                    Wyczysc prompt
+                  </button>
+                </div>
+              </>
+            )}
           </form>
+
+          {voiceCallStatus !== 'idle' && (
+            <div className="voiceCallOverlay" role="dialog" aria-modal="true" aria-label="Aktywne polaczenie glosowe">
+              <div className="voiceCallDock">
+                <section className="voiceModelWindow" aria-label="Model glosowy">
+                  <div className="voiceOrb voiceOrbActive" aria-hidden="true">
+                    <span className="voiceOrbMist voiceOrbMistOne" />
+                    <span className="voiceOrbMist voiceOrbMistTwo" />
+                    <span className="voiceOrbCore" />
+                  </div>
+
+                  <div className="voiceCallModalCopy">
+                    <p className="eyebrow">Realtime voice</p>
+                    <h3>Dzwonienie...</h3>
+                    <p>
+                      {realtimeModelId} | effort {realtimeEffort}
+                    </p>
+                  </div>
+                  {!shouldAskToSaveVoiceCall ? (
+                   <button
+                     className="voiceButton voiceButtonActive"
+                     type="button"
+                    onClick={handleVoiceCallToggle}
+                     aria-pressed="true"
+                   >
+                     Rozlacz
+                   </button>
+                  ) : (
+                    <div className="voiceSavePrompt">
+                      <p>Czy zapisac historie chatu?</p>
+                      <div className="voiceSaveActions">
+                        <button
+                          className="voiceSaveButton voiceSaveButtonNo"
+                          type="button"
+                          onClick={handleDiscardVoiceCallHistory}
+                          disabled={voiceCallStatus === 'saving'}
+                        >
+                          Nie
+                        </button>
+                        <button
+                          className="voiceSaveButton voiceSaveButtonYes"
+                          type="button"
+                          onClick={() => void handleSaveVoiceCallHistory()}
+                          disabled={voiceCallStatus === 'saving'}
+                        >
+                          {voiceCallStatus === 'saving' ? 'Zapisuje' : 'Tak'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </section>
+                <section className="voiceTranscriptWindow" aria-label="Transkrypcja chatu glosowego">
+                  <div>
+                    <p className="eyebrow">Live transcript</p>
+                    <h3>Transkrypcja rozmowy</h3>
+                  </div>
+
+                  <div className="voiceCallTranscript" aria-live="polite">
+                    <div className="voiceCallTranscriptHeader">
+                      <strong>Transkrypcja live</strong>
+                      <span>preview</span>
+                    </div>
+                    <div className="voiceCallTranscriptLines">
+                      {voiceCallTranscriptLines.map((line) => (
+                        <p className={`voiceTranscriptLine voiceTranscriptLine-${line.speaker}`} key={line.id}>
+                          <strong>{getVoiceTranscriptSpeakerLabel(line.speaker)}</strong>
+                          <span>{line.text}</span>
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+          )}
           </section>
         ) : (
           <section className="assistantPanel" aria-label="Pamiec XO">
@@ -1392,6 +1658,18 @@ function getLevelLabel(inputLevel: number, peakInputLevel: number) {
   }
 
   return 'OK';
+}
+
+function getVoiceTranscriptSpeakerLabel(speaker: VoiceCallTranscriptLine['speaker']) {
+  if (speaker === 'user') {
+    return 'Ty';
+  }
+
+  if (speaker === 'assistant') {
+    return 'XO';
+  }
+
+  return 'System';
 }
 
 function getErrorMessage(error: unknown) {
