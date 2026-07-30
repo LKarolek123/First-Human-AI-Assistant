@@ -14,9 +14,11 @@
   },
   "dependencies": {
     "@huggingface/transformers": "3.8.1",
+    "@openai/agents": "^0.14.1",
     "@tauri-apps/api": "^2.6.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",

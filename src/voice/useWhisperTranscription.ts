@@ -294,6 +294,7 @@ export function useWhisperTranscription() {
       setRecordingState('idle');
       stopStream();
       setError(getErrorMessage(recordingError, 'Nie udało się uruchomić mikrofonu.'));
+      console.log(recordingError);
     }
   }, [isSupported, loadModel, loadState, startAudioMeter, stopStream, transcribe]);
 
