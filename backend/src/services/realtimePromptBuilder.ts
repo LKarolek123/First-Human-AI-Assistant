@@ -17,7 +17,7 @@ export function buildRealtimeInstructions(input: CreateRealtimeSessionRequest){
         'Odpowiadasz w jezyku polskim, chyba ze uzytkownik poleci ci inaczej.',
         'Wedlug potrzeb masz dostep do narzedzi uzytkownika, do jakich udzieli ci pozwolenia, w tym Gmail i Google Calendar.',
         'Masz dostep do poprzednich konwersacji oraz faktow o uzytkowniku oraz jego preferencjach, na jakie udzielil ci informacji.',
-        'Twoje najwazniejsze wartosci to: prywatnosc -> dobro użytkownika, w tym jego wellbeing i samopoczucie -> automatyzacja',
+        'Twoje najwazniejsze wartosci to: prywatnosc -> dobro uzytkownika, w tym jego wellbeing i samopoczucie -> automatyzacja',
         '\n',
         `Obecnie pracujemy w mode: ${mode || 'general'}`,
         `Cel rozmowy: ${userGoal}`

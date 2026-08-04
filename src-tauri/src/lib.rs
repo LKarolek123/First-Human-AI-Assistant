@@ -84,6 +84,36 @@ struct VoiceCallHistoryResponse {
     messages: Vec<ChatMessage>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct RealtimePromptPreview {
+    model: String,
+    instructions: String,
+    #[serde(rename = "conversationMode")]
+    conversation_mode: String,
+    #[serde(rename = "dataSourcesUsed")]
+    data_sources_used: Vec<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RealtimeCallConfigRequest {
+    model: String,
+    effort: String,
+    #[serde(rename = "conversationMode")]
+    conversation_mode: Option<String>,
+    #[serde(rename = "userGoal")]
+    user_goal: Option<String>,
+   
+}
+
+#[derive(Serialize, Deserialize)]
+struct RealtimeCallConfig {
+    model: String,
+    instructions: String,
+    voice: String,
+    preview: RealtimePromptPreview,
+}
+
 #[derive(Serialize)]
 struct MemoryRecord {
     id: String,
@@ -389,6 +419,40 @@ fn save_voice_call_history(
         messages,
     })
 }
+
+
+#[tauri::command]
+async fn get_realtime_call_config(request: RealtimeCallConfigRequest) -> Result<RealtimeCallConfig, String> {
+    let response = reqwest::Client::new()
+    .post("http://127.0.0.1:4317/realtime/call-config")
+    .json(&request)
+    .send()
+    .await
+    .map_err(|error| format!("Nie udalo sie polaczyc z backendem JS). {error}"))?;
+
+
+    let status = response.status();
+
+    if !status.is_success() {
+        let error_body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "Nie udalo sie odczytac bledu backendu JS".to_string());
+
+        return Err(format!(
+            "Backend JS zwrocil blad {}. {}",
+            status.as_u16(),
+            error_body
+        ));
+    }
+
+    response
+        .json::<RealtimeCallConfig>()
+        .await
+        .map_err(|error| format!("Nie udalo sie odczytac konfiguracji realtime z backendu JS. {error} "))
+
+}
+
 
 #[tauri::command]
 fn list_memory_records(state: State<'_, AppState>) -> Result<Vec<MemoryRecord>, String> {
@@ -2968,6 +3032,7 @@ pub fn run() {
             list_memory_records,
             create_memory_record,
             save_memory_suggestion,
+            get_realtime_call_config,
             update_memory_record,
             delete_memory_record,
             send_chat_message,

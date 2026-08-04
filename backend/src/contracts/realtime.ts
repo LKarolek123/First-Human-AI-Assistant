@@ -21,4 +21,16 @@ export type CreateRealtimeSessionResponse = {
     preview: RealtimePromptPreview;
 };
 
+// nizej funkcje do chatu glosowego realtime 
+
+export type RealtimeVoice = 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse';
+
+export type RealtimeCallConfigRequest = CreateRealtimeSessionRequest;
+
+export type RealtimeCallConfig = {
+    model: CreateRealtimeSessionRequest['model'];
+    instructions: string;
+    voice: RealtimeVoice;
+    preview: RealtimePromptPreview;
+};
 

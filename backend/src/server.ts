@@ -1,8 +1,12 @@
 import { createServer } from 'node:http';
 import { healthRoute } from './routes/health';
 import type { CreateRealtimeSessionRequest } from './contracts/realtime';
-import { createRealtimePreviewRoute } from './routes/realtime';
 import { readJsonBody, sendJson } from './utils/http';
+import {
+    createRealtimeCallConfigRoute,
+    createRealtimePreviewRoute
+} from './routes/realtime';
+
 
 const HOST = '127.0.0.1';
 const PORT = 4317;
@@ -31,6 +35,20 @@ const server = createServer(async (request, response) => {
 
         return;
     }
+    if (request.method === 'POST' && request.url === '/realtime/call-config') {
+        try {
+            const body = await readJsonBody<CreateRealtimeSessionRequest>(request);
+            const payload = createRealtimeCallConfigRoute(body);
+            sendJson(response, 200, payload);
+
+
+        } catch (error) {
+            sendJson(response, 400, {
+                error: error instanceof Error ? error.message : 'Invalid request body!',
+            })
+        }
+        return;
+    };
 
     response.writeHead(404, {
         'content-type': 'application/json',
