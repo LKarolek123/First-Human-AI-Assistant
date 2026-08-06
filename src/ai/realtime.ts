@@ -28,8 +28,27 @@ export type GetRealtimeCallConfigRequest = {
     userGoal?: string;
 };
 
+export type CreateRealtimeCallRequest = GetRealtimeCallConfigRequest & {
+    sdpOffer: string;
+}
+
+export type CreateRealtimeCallResponse = {
+    sdpAnswer: string;
+    preview: RealtimePromptPreview;
+}
+
+/**
+ * wywoluje backend aplikacji, przekazuje mu request z model, instructions, voice i preview zapytania.
+ *  */
 export async function getRealtimeCallConfig (request: GetRealtimeCallConfigRequest) {
     return invoke<RealtimeCallConfig>('get_realtime_call_config', {
         request
     });
+};
+
+export async function createRealtimeCall (request: CreateRealtimeCallRequest) {
+    return invoke<CreateRealtimeCallResponse>('create_realtime_call', {
+        request,
+    });
 }
+

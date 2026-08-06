@@ -37,6 +37,8 @@ import {
   useWhisperTranscription,
   whisperModelOptions,
 } from './voice/useWhisperTranscription';
+import { createRealtimeCall, getRealtimeCallConfig } from './ai/realtime';
+import { createRealtimeOffer, RealtimeOffer } from './voice/realtimeConnection';
 
 const memoryAspects = [
   {
@@ -104,7 +106,7 @@ type ChatMemorySuggestion = MemorySuggestion & {
 type ChatInputMode = 'voice' | 'voiceText';
 type RealtimeModelId = (typeof realtimeModelOptions)[number]['value'];
 type RealtimeEffort = (typeof realtimeEffortOptions)[number]['value'];
-type VoiceCallStatus = 'idle' | 'calling' | 'saving';
+type VoiceCallStatus = 'idle' |'connecting' |'calling' | 'saving';
 type VoiceCallTranscriptLine = {
   id: string;
   speaker: 'system' | 'user' | 'assistant';
@@ -170,6 +172,10 @@ export function App() {
 
   const [shouldAskToSaveVoiceCall, setShouldAskToSaveVoiceCall] = useState(false);
   const autoSubmittedTranscriptRef = useRef('');
+
+  const realtimeOfferRef = useRef<RealtimeOffer | null>(null);
+  const realtimeRemoteAudioRef = useRef<HTMLAudioElement | null>(null);
+
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
@@ -408,6 +414,15 @@ export function App() {
   }
 
   function handleVoiceCallDisconnect() {
+    realtimeOfferRef.current?.localStream.getTracks().forEach((track) => track.stop());
+    realtimeOfferRef.current?.peerConnection.close();
+    realtimeOfferRef.current = null;
+
+    if (realtimeRemoteAudioRef.current) {
+      realtimeRemoteAudioRef.current.pause();
+      realtimeRemoteAudioRef.current.srcObject = null;
+    }
+
     if (!hasVoiceCallHistory) {
       setVoiceCallStatus('idle');
       setVoiceCallTranscriptLines([]);
@@ -467,10 +482,97 @@ export function App() {
         text: 'Dzwonienie. Transkrypcja live pojawi sie tutaj po podlaczeniu Realtime.',
       },
     ]);
-    console.log('dzwonienie', {
+    const config = await getRealtimeCallConfig({
       model: realtimeModelId,
       effort: realtimeEffort,
+      conversationMode: 'coding',
     });
+
+    console.log('Realtime call config', config);
+
+    const offer = await createRealtimeOffer();
+
+    offer.dataChannel.onmessage = (event) => {
+      const realtimeEvent = JSON.parse(event.data);
+      if (realtimeEvent.type === 'conversation.item.input_audio_transcription.completed') {
+        // console.log('User transcript', realtimeEvent.transcript);
+        const transcript = realtimeEvent.transcript?.trim();
+        if (!transcript) {
+          return;
+        }
+
+        setVoiceCallTranscriptLines((currentLines) => [...currentLines, 
+          {
+            id: crypto.randomUUID(),
+            speaker: 'user',
+            text: transcript,
+          },
+        ]);
+
+        return;
+      }
+
+
+      if (realtimeEvent.type === 'response.audio_transcript.delta') {
+        // console.log('AI message transcript', realtimeEvent.transcript);
+        const delta = realtimeEvent.delta;
+
+        if (!delta){
+          return;
+        }
+
+        setVoiceCallTranscriptLines((currentLines) => {
+          const lastLine = currentLines[currentLines.length - 1];
+
+          if (lastLine?.speaker === 'assistant') {
+            // tu zaczniemy prace w domu
+          }
+        })
+      }
+    };
+
+    offer.peerConnection.ontrack = (event) => {
+      const [remoteStream] = event.streams;
+      const audioElement = realtimeRemoteAudioRef.current;
+
+      if (!remoteStream || !audioElement){
+        return;
+      }
+      audioElement.srcObject = remoteStream;
+
+      void audioElement.play().catch((playError) => {
+        console.log('Realtime audio playback failed', playError);
+      });
+    };
+
+    offer.peerConnection.onconnectionstatechange = () => {
+      console.log('Realtime connection state', offer.peerConnection.connectionState);
+    };
+
+    
+
+    try {
+      const response = await createRealtimeCall({
+        model: realtimeModelId,
+        effort: realtimeEffort,
+        conversationMode: 'coding',
+        sdpOffer: offer.sdpOffer,
+      });
+
+      await offer.peerConnection.setRemoteDescription({
+        type: 'answer',
+        sdp: response.sdpAnswer,
+      });
+      console.log('Realtime WebRTC connected with preview', response.preview);
+      realtimeOfferRef.current = offer;
+    } catch {
+      offer.localStream.getTracks().forEach((track) => track.stop());
+    }
+    
+    
+    // offer.localStream.getTracks().forEach((track) => track.stop());
+    // offer.peerConnection.close();
+
   }
 
   async function handleConnectGoogleCalendar() {
@@ -1354,7 +1456,7 @@ export function App() {
               </>
             )}
           </form>
-
+            <audio ref={realtimeRemoteAudioRef} autoPlay />
           {voiceCallStatus !== 'idle' && (
             <div className="voiceCallOverlay" role="dialog" aria-modal="true" aria-label="Aktywne polaczenie glosowe">
               <div className="voiceCallDock">

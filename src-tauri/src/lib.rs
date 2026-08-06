@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
+const OPENAI_REALTIME_CALLS_URL: &str = "https://api.openai.com/v1/realtime/calls";
 const DEFAULT_MODEL: &str = "gpt-4.1-mini";
 const CHAT_INSTRUCTIONS: &str = "Jestes XO, spokojnym asystentem Human First. Odpowiadaj po polsku, konkretnie i zyczliwie. Masz pamietac wczesniejsze rozmowy uzytkownika, kiedy dostajesz je w kontekscie. Jawna pamiec ustawiona przez uzytkownika ma pierwszenstwo przed surowa historia rozmow. Nie udawaj dostepu do narzedzi, ktorych nie masz. Jesli kontekst z poprzednich rozmow pomaga, uzyj go naturalnie i dyskretnie.";
 const MEMORY_SUGGESTION_INSTRUCTIONS: &str = "Analizujesz tylko najnowsza wiadomosc uzytkownika, najnowsza odpowiedz XO i istniejace jawne wpisy pamieci. Nie uzywaj ani nie zakladaj zadnej innej historii. Zaproponuj maksymalnie 3 stabilne i przydatne wpisy pamieci na przyszle rozmowy: preferencje, decyzje, fakty projektowe, fakty o uzytkowniku lub stale ograniczenia pracy. Nie proponuj sekretow, hasel, tokenow, kluczy API, danych zdrowotnych ani prywatnych/wrazliwych danych o osobach trzecich. Nie proponuj informacji chwilowych, oczywistych, niepewnych ani duplikatow istniejacej pamieci. Zwroc wylacznie poprawny JSON w formacie {\"suggestions\":[{\"content\":\"...\",\"category\":\"preference\",\"reason\":\"...\"}]}. Dozwolone category: user_fact, preference, project, decision, privacy.";
@@ -112,6 +113,57 @@ struct RealtimeCallConfig {
     instructions: String,
     voice: String,
     preview: RealtimePromptPreview,
+}
+
+#[derive(Deserialize)]
+struct CreateRealtimeCallRequest {
+    model: String,
+    effort: String,
+    #[serde(rename = "conversationMode")]
+    conversation_mode: Option<String>,
+    #[serde(rename = "userGoal")]
+    user_goal: Option<String>,
+    #[serde(rename = "sdpOffer")]
+    sdp_offer: String,
+}
+
+
+#[derive(Serialize)]
+struct CreateRealtimeCallResponse {
+    #[serde(rename = "sdpAnswer")]
+    sdp_answer: String,
+    preview: RealtimePromptPreview,
+}
+
+#[derive(Serialize)]
+struct OpenAIRealtimeSessionPayload {
+    #[serde(rename = "type")]
+    session_type: String,
+    model: String,
+    instructions: String,
+    audio: OpenAIRealtimeAudioConfig,
+}
+
+
+#[derive(Serialize)]
+struct OpenAIRealtimeAudioConfig {
+    input: OpenAIRealtimeAudioInputConfig,
+    output: OpenAIRealtimeAudioOutputConfig,
+}
+
+#[derive(Serialize)]
+struct OpenAIRealtimeAudioOutputConfig {
+    voice: String,   
+}
+
+#[derive(Serialize)]
+struct OpenAIRealtimeAudioInputTranscriptionConfig {
+    model: String,
+}
+
+#[derive(Serialize)]
+struct OpenAIRealtimeAudioInputConfig {
+    transcription: OpenAIRealtimeAudioInputTranscriptionConfig,
 }
 
 #[derive(Serialize)]
@@ -452,6 +504,104 @@ async fn get_realtime_call_config(request: RealtimeCallConfigRequest) -> Result<
         .map_err(|error| format!("Nie udalo sie odczytac konfiguracji realtime z backendu JS. {error} "))
 
 }
+
+async fn request_openai_realtime_call(
+    api_key: &str,
+    sdp_offer: &str,
+    config: &RealtimeCallConfig,
+) -> Result<String, String> {
+    let session = OpenAIRealtimeSessionPayload {
+        session_type: "realtime".to_string(),
+        model: config.model.clone(),
+        instructions: config.instructions.clone(),
+        audio: OpenAIRealtimeAudioConfig {
+            input: OpenAIRealtimeAudioInputConfig{
+                transcription: OpenAIRealtimeAudioInputTranscriptionConfig {
+                    model: "gpt-4o-mini-transcribe".to_string(),
+                },
+            },
+            output: OpenAIRealtimeAudioOutputConfig {
+                voice: config.voice.clone(),
+            }
+        }
+    };
+
+    let session_json = serde_json::to_string(&session)
+    .map_err(|error| format!("Nie udalo sie przygotowac konfiguracji realtime. {error}"))?;
+    let form = reqwest::multipart::Form::new()
+        .part(
+            "sdp",
+            reqwest::multipart::Part::text(sdp_offer.to_string())
+            .mime_str("application/sdp")
+            .map_err(|error| format!("Nie udalo sie przygotowac SDP offer. {error}"))?,
+        )
+        .part(
+            "session",
+            reqwest::multipart::Part::text(session_json)
+                .mime_str("application/json")
+                .map_err(|error| format!("NIe udalo sie przygotowac sesji realtime. {error}"))?,
+        );
+
+    let response = reqwest::Client::new()
+        .post(OPENAI_REALTIME_CALLS_URL)
+        .bearer_auth(api_key)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|error| format!("Nie udalo sie polaczyc z OpenAI Realtime. {error}"))?;
+
+    let status = response.status();
+    let response_text = response
+        .text()
+        .await
+        .map_err(|error| format!("Nie udalo sie odczytac odpowiedzi OpenAI. {error}"))?;
+    
+    if !status.is_success() {
+        return Err(format!(
+            "OpenAI Realtime API zwrocilo blad {}. {}",
+            status.as_u16(),
+            response_text,
+        ))
+    }
+
+    Ok(response_text)
+}
+
+
+
+
+#[tauri::command]
+async fn create_realtime_call(request: CreateRealtimeCallRequest) 
+-> Result<CreateRealtimeCallResponse, String> {
+    if request.sdp_offer.trim().is_empty() {
+        return Err("Brakuje SDP offer dla polaczenia realtime.".to_string());
+    }
+    let config = get_realtime_call_config(RealtimeCallConfigRequest {
+        model: request.model,
+        effort: request.effort,
+        conversation_mode: request.conversation_mode,
+        user_goal: request.user_goal,
+    })
+    .await?;
+
+    let api_key = std::env::var("OPENAI_API_KEY")
+    .map_err(|_| "Brakuje OPENAI_API_KEY w .env".to_string())?;
+
+    let sdp_answer = request_openai_realtime_call(
+        &api_key,
+        &request.sdp_offer,
+        &config,
+    )
+    .await?;
+    
+    Ok(CreateRealtimeCallResponse {
+        sdp_answer,
+        preview: config.preview,
+    })
+
+
+}
+
 
 
 #[tauri::command]
@@ -3033,6 +3183,7 @@ pub fn run() {
             create_memory_record,
             save_memory_suggestion,
             get_realtime_call_config,
+            create_realtime_call,
             update_memory_record,
             delete_memory_record,
             send_chat_message,
