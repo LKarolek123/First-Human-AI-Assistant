@@ -175,7 +175,7 @@ export function App() {
 
   const realtimeOfferRef = useRef<RealtimeOffer | null>(null);
   const realtimeRemoteAudioRef = useRef<HTMLAudioElement | null>(null);
-
+  const realtimeAssistantLineIdsRef = useRef<Record<string, string>>({});
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
@@ -423,6 +423,8 @@ export function App() {
       realtimeRemoteAudioRef.current.srcObject = null;
     }
 
+    realtimeAssistantLineIdsRef.current = {};
+
     if (!hasVoiceCallHistory) {
       setVoiceCallStatus('idle');
       setVoiceCallTranscriptLines([]);
@@ -475,6 +477,8 @@ export function App() {
 
     setShouldAskToSaveVoiceCall(false);
     setVoiceCallStatus('calling');
+    console.log("Dzwonienie ===================================");
+    realtimeAssistantLineIdsRef.current = {};
     setVoiceCallTranscriptLines([
       {
         id: crypto.randomUUID(),
@@ -488,12 +492,22 @@ export function App() {
       conversationMode: 'coding',
     });
 
-    console.log('Realtime call config', config);
+    // console.log('Realtime call config', config);
 
     const offer = await createRealtimeOffer();
 
     offer.dataChannel.onmessage = (event) => {
       const realtimeEvent = JSON.parse(event.data);
+
+
+      if (
+        realtimeEvent.type.includes('transcript') ||
+        realtimeEvent.type.includes('response.output')
+      ) {
+        // console.log('Realtime transcript candidate', realtimeEvent);
+      }
+
+
       if (realtimeEvent.type === 'conversation.item.input_audio_transcription.completed') {
         // console.log('User transcript', realtimeEvent.transcript);
         const transcript = realtimeEvent.transcript?.trim();
@@ -501,35 +515,105 @@ export function App() {
           return;
         }
 
-        setVoiceCallTranscriptLines((currentLines) => [...currentLines, 
-          {
-            id: crypto.randomUUID(),
-            speaker: 'user',
-            text: transcript,
-          },
-        ]);
+        setVoiceCallTranscriptLines((currentLines) => {
+  const userLine = {
+    id: crypto.randomUUID(),
+    speaker: 'user' as const,
+    text: transcript,
+  };
+
+  const lastLine = currentLines[currentLines.length - 1];
+
+  if (lastLine?.speaker === 'assistant') {
+    return [
+      ...currentLines.slice(0, -1),
+      userLine,
+      lastLine,
+    ];
+  }
+
+  return [
+    ...currentLines,
+    userLine,
+  ];
+});
 
         return;
       }
 
 
-      if (realtimeEvent.type === 'response.audio_transcript.delta') {
+      if (realtimeEvent.type === 'response.output_audio_transcript.delta') {
         // console.log('AI message transcript', realtimeEvent.transcript);
         const delta = realtimeEvent.delta;
-
-        if (!delta){
+        const itemId = realtimeEvent.item_id;
+        // console.log('AI delta fields', {
+        //  delta,
+        //  itemId,
+        // });
+        
+        if (!delta || !itemId){
           return;
         }
 
         setVoiceCallTranscriptLines((currentLines) => {
-          const lastLine = currentLines[currentLines.length - 1];
 
-          if (lastLine?.speaker === 'assistant') {
-            // tu zaczniemy prace w domu
+          // console.log('Before assistant state update', {
+          //   currentLines,
+          //   delta,
+          //   itemId,
+          //   existingLineId: realtimeAssistantLineIdsRef.current[itemId],
+          // });
+
+          // const lastLine = currentLines[currentLines.length - 1];
+
+          // if (lastLine?.speaker === 'assistant') {
+          //   return currentLines.map((line, index) => 
+          //     index === currentLines.length - 1
+          //     ? {...line, text: line.text + delta}
+          //     : line
+          //   );
+          // }
+
+          const existingLineId =realtimeAssistantLineIdsRef.current[itemId];
+
+          if (existingLineId && currentLines.some((line) => line.id === existingLineId)) {
+            // console.log('Updating assistant line', {
+            //   existingLineId,
+            //   delta,
+            // });
+            return currentLines.map((line) =>
+              line.id === existingLineId
+              ? {...line, text: line.text + delta}
+              : line,
+            );
           }
-        })
+          const lineId = crypto.randomUUID();
+          realtimeAssistantLineIdsRef.current[itemId] = lineId;
+
+        //  console.log('Creating assistant line', {
+        //     lineId,
+        //     delta,
+        //  });
+
+          return [
+            ...currentLines, 
+            {
+              id: lineId,
+              speaker: 'assistant',
+              text: delta,
+            },
+          ];
+        });
+      return;
+      };
+      // console.log('Realtime event type', realtimeEvent.type);
+      if (
+        realtimeEvent.type.includes('transcript') ||
+        realtimeEvent.type.includes('response.output')
+      ) {
+        // console.log('Realtime transcript candidate', realtimeEvent);
       }
-    };
+  };
 
     offer.peerConnection.ontrack = (event) => {
       const [remoteStream] = event.streams;
