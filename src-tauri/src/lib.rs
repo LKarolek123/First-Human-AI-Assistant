@@ -35,6 +35,18 @@ const GOOGLE_CALENDAR_KEYRING_USER: &str = "google-calendar";
 const GMAIL_KEYRING_USER: &str = "google-gmail";
 const GOOGLE_OAUTH_CLIENT_SECRET_KEYRING_USER: &str = "google-oauth-client-secret";
 
+
+const VOICE_MEMORY_SUGGESTION_INSTRUCTIONS: &str = "Analizujesz cala zapisana rozmowe glosowa uzytkownika z XO 
+i istniejace jawne wpisy pamieci. Nie uzywaj ani nie zakladaj zadnej innej historii. 
+Zaproponuj maksymalnie 3 stabilne i przydatne wpisy pamieci na przyszle rozmowy: 
+preferencje, decyzje, fakty projektowe, fakty o uzytkowniku lub stale ograniczenia pracy. 
+Nie proponuj sekretow, hasel, tokenow, kluczy API, danych zdrowotnych ani prywatnych/wrazliwych 
+danych o osobach trzecich. Nie proponuj informacji chwilowych, oczywistych, 
+niepewnych ani duplikatow istniejacej pamieci. Zwroc wylacznie poprawny JSON w formacie 
+{\"suggestions\":[{\"content\":\"...\",\"category\":\"preference\"}]}. 
+Nie dodawaj pola reason. Dozwolone category: user_fact, preference, project, decision, privacy.
+";
+
 struct AppState {
     db: Mutex<Connection>,
     pending_google_calendar_oauth: Mutex<Option<PendingGoogleOAuth>>,
@@ -83,6 +95,8 @@ struct VoiceCallHistoryLine {
 struct VoiceCallHistoryResponse {
     conversation: ConversationSummary,
     messages: Vec<ChatMessage>,
+    memory_suggestions: Vec<MemorySuggestion>,
+    memory_suggestion_analysis: MemorySuggestionAnalysis
 }
 
 #[derive(Serialize, Deserialize)]
@@ -423,8 +437,90 @@ fn get_conversation_messages(
     load_messages(&db, &conversation_id)
 }
 
+async fn build_memory_suggestions(
+    messages: &[ChatMessage],
+    conversation_id: &str,
+    existing_memory: &[MemoryRecord],
+) -> Result<Vec<MemorySuggestion>, String> {
+    let voice_messages: Vec<serde_json::Value> = messages
+        .iter()
+        .filter(|message| message.role == "user" || message.role == "assistant")
+        .map(|message| {
+            serde_json::json!({
+                "role": &message.role,
+                "content": truncate(&message.content, 2000),
+            })
+        })
+        .collect();
+
+    if voice_messages.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let existing_memory_json = serde_json::to_string_pretty(
+        &existing_memory
+            .iter()
+            .take(40)
+            .map(|item| {
+                serde_json::json!({
+                    "category": &item.category,
+                    "content": truncate(&item.content, 360),
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| format!("Nie udalo sie przygotowac pamieci do analizy. {error}"))?;
+
+    let conversation_json = serde_json::to_string_pretty(&voice_messages)
+        .map_err(|error| format!("Nie udalo sie przygotowac rozmowy glosowej do analizy. {error}"))?;
+
+    let input = format!(
+        r#"Istniejace wpisy pamieci:
+{}
+
+Rozmowa glosowa jako JSON:
+{}
+"#,
+        existing_memory_json,
+        conversation_json,
+    );
+
+    let response_text = request_openai_text(VOICE_MEMORY_SUGGESTION_INSTRUCTIONS, &input).await?;
+    let raw_suggestions = parse_memory_suggestions(&response_text)?;
+
+    let mut suggestions = Vec::new();
+    let reason = format!("voice chat: {conversation_id}");
+
+    for raw in raw_suggestions {
+        let Some(content) = raw.content.as_deref() else {
+            continue;
+        };
+
+        let Some(category) = raw.category.as_deref() else {
+            continue;
+        };
+
+        let suggestion = match validate_memory_suggestion(category, content, &reason) {
+            Ok(suggestion) => suggestion,
+            Err(_) => continue,
+        };
+
+        if is_duplicate_memory_suggestion(&suggestion.content, existing_memory, &suggestions) {
+            continue;
+        }
+
+        suggestions.push(suggestion);
+
+        if suggestions.len() == 3 {
+            break;
+        }
+    }
+
+    Ok(suggestions)
+}
+
 #[tauri::command]
-fn save_voice_call_history(
+async fn save_voice_call_history(
     lines: Vec<VoiceCallHistoryLine>,
     state: State<'_, AppState>,
 ) -> Result<VoiceCallHistoryResponse, String> {
@@ -446,31 +542,63 @@ fn save_voice_call_history(
         return Err("Brak tresci rozmowy glosowej do zapisania.".to_string());
     }
 
-    let db = state
-        .db
-        .lock()
-        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
-    let now = unix_timestamp();
-    let conversation_id = create_id("chat");
-    let title = normalize_title("Rozmowa glosowa");
 
-    db.execute(
-        "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-        params![conversation_id, title, now, now],
-    )
-    .map_err(|error| format!("Nie udalo sie utworzyc rozmowy glosowej. {error}"))?;
+    let (conversation, messages, existing_memory) = {
+        let now = unix_timestamp();
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
 
-    let mut messages = Vec::new();
+        let conversation_id = create_id("chat");
+        let title = normalize_title("Rozmowa glosowa");
 
-    for (role, content) in sanitized_lines {
-        messages.push(insert_message(&db, &conversation_id, &role, &content)?);
+        db.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            params![conversation_id, title, now, now],
+        )
+        .map_err(|error| format!("Nie udalo sie utworzyc rozmowy glosowej. {error}"))?;
+
+        let mut messages = Vec::new();
+
+        for (role, content) in sanitized_lines {
+            messages.push(insert_message(&db, &conversation_id, &role, &content)?);
+        }
+
+        let existing_memory = load_memory_records(&db)?;
+        let conversation = load_conversation(&db, &conversation_id)?;
+
+        (conversation, messages, existing_memory)
+    };
+
+    
+    let memory_suggestions =
+    build_memory_suggestions(&messages, &conversation.id, &existing_memory).await?;
+    
+
+    let memory_suggestion_analysis = if memory_suggestions.is_empty() {
+        MemorySuggestionAnalysis {
+            status: "empty".to_string(),
+            message: "XO nie znalazl w tej rozmowie nic stabilnego do zapamietania.".to_string(),
+        }
+    } else {
+        MemorySuggestionAnalysis {
+            status: "found".to_string(),
+            message: format!(
+                "XO znalazl {} sugestie pamieci do zatwierdzenia.",
+                memory_suggestions.len()
+            ),
+        }
+    };
+
+        Ok(VoiceCallHistoryResponse {
+            conversation: conversation,
+            messages,
+            memory_suggestions,
+            memory_suggestion_analysis,
+
+        })
     }
-
-    Ok(VoiceCallHistoryResponse {
-        conversation: load_conversation(&db, &conversation_id)?,
-        messages,
-    })
-}
 
 
 #[tauri::command]

@@ -39,6 +39,7 @@ import {
 } from './voice/useWhisperTranscription';
 import { createRealtimeCall, getRealtimeCallConfig } from './ai/realtime';
 import { createRealtimeOffer, RealtimeOffer } from './voice/realtimeConnection';
+import { text } from 'node:stream/consumers';
 
 const memoryAspects = [
   {
@@ -106,7 +107,7 @@ type ChatMemorySuggestion = MemorySuggestion & {
 type ChatInputMode = 'voice' | 'voiceText';
 type RealtimeModelId = (typeof realtimeModelOptions)[number]['value'];
 type RealtimeEffort = (typeof realtimeEffortOptions)[number]['value'];
-type VoiceCallStatus = 'idle' |'connecting' |'calling' | 'saving';
+type VoiceCallStatus = 'idle' |'connecting' |'calling' | 'saving' | 'failed';
 type VoiceCallTranscriptLine = {
   id: string;
   speaker: 'system' | 'user' | 'assistant';
@@ -456,6 +457,9 @@ export function App() {
       setShouldAskToSaveVoiceCall(false);
       setVoiceCallTranscriptLines([]);
       setVoiceCallStatus('idle');
+      console.log('Voice history lines to save', historyLines);
+      // to linijki z naszym chatem
+      
     } catch (saveError) {
       setChatError(getErrorMessage(saveError));
       setVoiceCallStatus('calling');
@@ -500,12 +504,12 @@ export function App() {
       const realtimeEvent = JSON.parse(event.data);
 
 
-      if (
-        realtimeEvent.type.includes('transcript') ||
-        realtimeEvent.type.includes('response.output')
-      ) {
-        // console.log('Realtime transcript candidate', realtimeEvent);
-      }
+      // if (
+      //   realtimeEvent.type.includes('transcript') ||
+      //   realtimeEvent.type.includes('response.output')
+      // ) {
+      //   // console.log('Realtime transcript candidate', realtimeEvent);
+      // }
 
 
       if (realtimeEvent.type === 'conversation.item.input_audio_transcription.completed') {
@@ -516,30 +520,30 @@ export function App() {
         }
 
         setVoiceCallTranscriptLines((currentLines) => {
-  const userLine = {
-    id: crypto.randomUUID(),
-    speaker: 'user' as const,
-    text: transcript,
-  };
+          const userLine = {
+            id: crypto.randomUUID(),
+            speaker: 'user' as const,
+            text: transcript,
+          };
 
-  const lastLine = currentLines[currentLines.length - 1];
+          const lastLine = currentLines[currentLines.length - 1];
 
-  if (lastLine?.speaker === 'assistant') {
-    return [
-      ...currentLines.slice(0, -1),
-      userLine,
-      lastLine,
-    ];
-  }
+          if (lastLine?.speaker === 'assistant') {
+            return [
+              ...currentLines.slice(0, -1),
+              userLine,
+              lastLine,
+            ];
+          }
 
-  return [
-    ...currentLines,
-    userLine,
-  ];
-});
+          return [
+            ...currentLines,
+            userLine,
+          ];
+        });
 
         return;
-      }
+      };
 
 
       if (realtimeEvent.type === 'response.output_audio_transcript.delta') {
@@ -590,10 +594,10 @@ export function App() {
           const lineId = crypto.randomUUID();
           realtimeAssistantLineIdsRef.current[itemId] = lineId;
 
-        //  console.log('Creating assistant line', {
-        //     lineId,
-        //     delta,
-        //  });
+          //  console.log('Creating assistant line', {
+          //     lineId,
+          //     delta,
+          //  });
 
           return [
             ...currentLines, 
@@ -606,12 +610,36 @@ export function App() {
         });
       return;
       };
+
       // console.log('Realtime event type', realtimeEvent.type);
-      if (
-        realtimeEvent.type.includes('transcript') ||
-        realtimeEvent.type.includes('response.output')
-      ) {
-        // console.log('Realtime transcript candidate', realtimeEvent);
+      // if (
+      //   realtimeEvent.type.includes('transcript') ||
+      //   realtimeEvent.type.includes('response.output')
+      // ) {
+      //   // console.log('Realtime transcript candidate', realtimeEvent);
+      // }
+
+      if (realtimeEvent.type === 'response.output_audio_transcript.done') {
+        const transcript = realtimeEvent.transcript?.trim();
+        const itemId = realtimeEvent.item_id;
+
+        if (!transcript || !itemId) {
+          return;
+        }
+
+        const existingLine = realtimeAssistantLineIdsRef.current[itemId];
+
+        if (!existingLine) {
+          return;
+        }
+
+        setVoiceCallTranscriptLines((currentLines) => 
+          currentLines.map((line) =>
+            line.id === existingLine ? {...line, text: transcript}
+            : line,
+          ),
+        );
+        return;
       }
   };
 
@@ -650,6 +678,8 @@ export function App() {
       console.log('Realtime WebRTC connected with preview', response.preview);
       realtimeOfferRef.current = offer;
     } catch {
+      setVoiceCallStatus('failed');
+      console.log(voiceCallStatus);
       offer.localStream.getTracks().forEach((track) => track.stop());
     }
     
