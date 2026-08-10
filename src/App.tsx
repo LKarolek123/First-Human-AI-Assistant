@@ -39,7 +39,11 @@ import {
 } from './voice/useWhisperTranscription';
 import { createRealtimeCall, getRealtimeCallConfig } from './ai/realtime';
 import { createRealtimeOffer, RealtimeOffer } from './voice/realtimeConnection';
-import { text } from 'node:stream/consumers';
+import { Memory } from './Memory';
+import { ChatInput } from './ChatInput';
+import { LandingPage } from './LandingPage';
+import { SidePanel } from './SidePanel';
+import { ChatSection } from './ChatSection';
 
 const memoryAspects = [
   {
@@ -96,6 +100,245 @@ const realtimeEffortOptions = [
   { value: 'high', label: 'High' },
 ] as const;
 
+type UiLanguage = 'pl' | 'en';
+
+const uiCopy = {
+  pl: {
+    plugins: 'Wtyczki',
+    memory: 'Pamięć',
+    chats: 'Chaty',
+    newChat: 'Nowy chat',
+    chat: 'Czat',
+    newConversation: 'Nowa rozmowa',
+    incognito: 'Incognito',
+    normalMode: 'Normalny',
+    languageButton: 'English',
+    localAccount: 'konto lokalne',
+    profile: 'Profil',
+    settings: 'Ustawienia',
+    privacy: 'Prywatność',
+    userLabel: 'Ty',
+    assistantLabel: 'Assistant',
+    emptyChatTitle: 'Nowa rozmowa jest gotowa.',
+    emptyChatBody: 'Wyślij wiadomość, aby rozpocząć.',
+    thinking: 'myślę...',
+    composerFooter: 'Dyktafon zamieni głos na tekst. Calling uruchamia rozmowę realtime.',
+    activeVoiceCall: 'Aktywne połączenie głosowe',
+    realtimeVoice: 'Głos realtime',
+    callingStatus: 'Dzwonienie...',
+    disconnect: 'Rozłącz',
+    saveHistoryQuestion: 'Czy zapisać historię chatu?',
+    no: 'Nie',
+    yes: 'Tak',
+    saving: 'Zapisuję',
+    voiceTranscript: 'Transkrypcja chatu głosowego',
+    liveTranscript: 'Transkrypcja live',
+    conversationTranscript: 'Transkrypcja rozmowy',
+    preview: 'podgląd',
+    addContext: 'Dodaj kontekst',
+    file: 'Plik',
+    calendar: 'Kalendarz',
+    messagePlaceholder: 'Napisz wiadomość...',
+    send: 'Wyślij',
+    messageTools: 'Narzędzia wiadomości',
+    stopDictation: 'Zatrzymaj dyktafon',
+    dictation: 'Dyktafon',
+    calling: 'Calling',
+    unsupportedBrowser: 'Ta przeglądarka nie udostępnia nagrywania audio przez MediaRecorder.',
+    loadingWhisperPlaceholder: 'Ładuję model Whisper. Pierwszy raz może potrwać dłużej.',
+    recordingPlaceholder: 'Mów po polsku. Po 3 sekundach ciszy XO sam zakończy nagranie i wyśle wiadomość.',
+    transcribingPlaceholder: 'Przepisuję nagranie i przygotowuję automatyczną wysyłkę...',
+    idleTranscriptPlaceholder: 'Kliknij Nagraj, powiedz coś po polsku, a XO wyśle wiadomość po wykryciu pauzy.',
+    memoryPanelLabel: 'Pamięć Assistant',
+    memoryTitle: 'Pamięć Assistant',
+    memoryEntrySingular: 'wpis',
+    memoryEntryPlural: 'wpisów',
+    category: 'Kategoria',
+    content: 'Treść',
+    memoryContentLabel: 'Co Assistant ma pamiętać',
+    memoryPlaceholder: 'Np. Użytkownik woli konkretne odpowiedzi i małe kroki implementacji.',
+    addMemory: 'Dodaj pamięć',
+    saveChanges: 'Zapisz zmiany',
+    cancelEdit: 'Anuluj edycję',
+    edit: 'Edytuj',
+    delete: 'Usuń',
+    updatedAt: 'aktualizacja',
+    emptyMemoryTitle: 'Brak jawnych wpisów pamięci.',
+    emptyMemoryBody: 'Dodaj pierwszą rzecz, którą Assistant ma stabilnie pamiętać w kolejnych rozmowach.',
+    memorySuggestionsLabel: 'Sugestie pamięci',
+    assistantCanRemember: 'Assistant może zapamiętać',
+    saved: 'Zapisano',
+    save: 'Zapisz',
+    reject: 'Odrzuć',
+    pluginDrawerLabel: 'Wtyczki',
+    integrations: 'Integracje',
+    closePlugins: 'Zamknij wtyczki',
+    pluginTabsLabel: 'Zakładki wtyczek',
+    connectedGoogleAccount: 'Połączono konto Google',
+    connectCalendarDescription: 'Połącz kalendarz, aby Assistant mógł prosić Rust o dozwolone informacje z wydarzeń.',
+    connectedGmailAccount: 'Połączono Gmail',
+    connectGmailDescription: 'Połącz Gmail, aby Assistant mógł prosić Rust o dozwolone podsumowania poczty.',
+    read: 'Czytam',
+    check: 'Sprawdź',
+    disconnectPlugin: 'Odłącz',
+    connect: 'Połącz',
+    connecting: 'Łączę',
+    noDate: 'bez daty',
+    noSubject: 'Bez tematu',
+    unknownSender: 'nieznany nadawca',
+    openLogin: 'Otwórz logowanie',
+    copyLink: 'Kopiuj link',
+    pluginSettingsLabel: 'Ustawienia wtyczki',
+    savedClientSecret: 'zapisany w systemowym sejfie',
+    pasteGoogleSecret: 'wklej z Google Cloud / JSON',
+    clientSecretStored: 'Client Secret jest już zapisany lokalnie.',
+    backendKeepsSecret: 'Po zapisaniu backend trzyma sekret w systemowym sejfie.',
+    saveSettings: 'Zapisz ustawienia',
+    memoryCategory_user_fact: 'Fakt o użytkowniku',
+    memoryCategory_preference: 'Preferencja',
+    memoryCategory_project: 'Projekt',
+    memoryCategory_decision: 'Decyzja',
+    memoryCategory_tool_note: 'Wniosek z narzędzia',
+    memoryCategory_privacy: 'Prywatność',
+    memoryAspectUserFactsTitle: 'Fakty o użytkowniku',
+    memoryAspectUserFactsItem1: 'stałe preferencje i zasady pracy',
+    memoryAspectUserFactsItem2: 'projekty, role i długoterminowe cele',
+    memoryAspectUserFactsItem3: 'osoby, organizacje i ważne relacje',
+    memoryAspectConversationsTitle: 'Pamięć rozmów',
+    memoryAspectConversationsItem1: 'najważniejsze ustalenia z poprzednich chatów',
+    memoryAspectConversationsItem2: 'decyzje, które mają wpływ na kolejne rozmowy',
+    memoryAspectConversationsItem3: 'kontekst, który warto streszczać zamiast trzymać w surowej historii',
+    memoryAspectToolsTitle: 'Pamięć z narzędzi',
+    memoryAspectToolsItem1: 'wnioski z kalendarza, nie pełna kopia wydarzeń',
+    memoryAspectToolsItem2: 'priorytety z Gmaila, nie cała skrzynka',
+    memoryAspectToolsItem3: 'alerty i rekomendacje z jasnym źródłem',
+    memoryAspectPrivacyTitle: 'Kontrola i prywatność',
+    memoryAspectPrivacyItem1: 'każdy zapis pamięci powinien być widoczny i edytowalny',
+    memoryAspectPrivacyItem2: 'użytkownik powinien móc podejrzeć, edytować i usunąć wpis',
+    memoryAspectPrivacyItem3: 'dane wrażliwe wymagają ostrożniejszych kategorii i zgody',
+    whisperTiny: 'Szybki',
+    whisperBase: 'Zbalansowany',
+    whisperSmall: 'Dokładny',
+  },
+  en: {
+    plugins: 'Plugins',
+    memory: 'Memory',
+    chats: 'Chats',
+    newChat: 'New chat',
+    chat: 'Chat',
+    newConversation: 'New conversation',
+    incognito: 'Incognito',
+    normalMode: 'Normal mode',
+    languageButton: 'Polski',
+    localAccount: 'local account',
+    profile: 'Profile',
+    settings: 'Settings',
+    privacy: 'Privacy',
+    userLabel: 'You',
+    assistantLabel: 'Assistant',
+    emptyChatTitle: 'New conversation is ready.',
+    emptyChatBody: 'Send a message to start.',
+    thinking: 'thinking...',
+    composerFooter: 'Dictation turns voice into text. Calling starts a realtime conversation.',
+    activeVoiceCall: 'Active voice connection',
+    realtimeVoice: 'Realtime voice',
+    callingStatus: 'Calling...',
+    disconnect: 'Disconnect',
+    saveHistoryQuestion: 'Save chat history?',
+    no: 'No',
+    yes: 'Yes',
+    saving: 'Saving',
+    voiceTranscript: 'Voice chat transcript',
+    liveTranscript: 'Live transcript',
+    conversationTranscript: 'Conversation transcript',
+    preview: 'preview',
+    addContext: 'Add context',
+    file: 'File',
+    calendar: 'Calendar',
+    messagePlaceholder: 'Send a message...',
+    send: 'Send',
+    messageTools: 'Message tools',
+    stopDictation: 'Stop dictation',
+    dictation: 'Dictation',
+    calling: 'Calling',
+    unsupportedBrowser: 'This browser does not expose audio recording through MediaRecorder.',
+    loadingWhisperPlaceholder: 'Loading the Whisper model. The first run may take longer.',
+    recordingPlaceholder: 'Speak in English. After 3 seconds of silence XO will finish recording and send the message.',
+    transcribingPlaceholder: 'Transcribing the recording and preparing automatic send...',
+    idleTranscriptPlaceholder: 'Click Record, speak, and XO will send the message after detecting a pause.',
+    memoryPanelLabel: 'Assistant memory',
+    memoryTitle: 'Assistant Memory',
+    memoryEntrySingular: 'entry',
+    memoryEntryPlural: 'entries',
+    category: 'Category',
+    content: 'Content',
+    memoryContentLabel: 'What Assistant should remember',
+    memoryPlaceholder: 'E.g. The user prefers concise answers and small implementation steps.',
+    addMemory: 'Add memory',
+    saveChanges: 'Save changes',
+    cancelEdit: 'Cancel edit',
+    edit: 'Edit',
+    delete: 'Delete',
+    updatedAt: 'updated',
+    emptyMemoryTitle: 'No explicit memory entries.',
+    emptyMemoryBody: 'Add the first stable thing Assistant should remember in future conversations.',
+    memorySuggestionsLabel: 'Memory suggestions',
+    assistantCanRemember: 'Assistant can remember',
+    saved: 'Saved',
+    save: 'Save',
+    reject: 'Reject',
+    pluginDrawerLabel: 'Plugins',
+    integrations: 'Integrations',
+    closePlugins: 'Close plugins',
+    pluginTabsLabel: 'Plugin tabs',
+    connectedGoogleAccount: 'Google account connected',
+    connectCalendarDescription: 'Connect Calendar so Assistant can ask Rust for allowed event information.',
+    connectedGmailAccount: 'Gmail connected',
+    connectGmailDescription: 'Connect Gmail so Assistant can ask Rust for allowed email summaries.',
+    read: 'Reading',
+    check: 'Check',
+    disconnectPlugin: 'Disconnect',
+    connect: 'Connect',
+    connecting: 'Connecting',
+    noDate: 'no date',
+    noSubject: 'No subject',
+    unknownSender: 'unknown sender',
+    openLogin: 'Open login',
+    copyLink: 'Copy link',
+    pluginSettingsLabel: 'Plugin settings',
+    savedClientSecret: 'saved in the system vault',
+    pasteGoogleSecret: 'paste from Google Cloud / JSON',
+    clientSecretStored: 'Client Secret is already stored locally.',
+    backendKeepsSecret: 'After saving, the backend keeps the secret in the system vault.',
+    saveSettings: 'Save settings',
+    memoryCategory_user_fact: 'User fact',
+    memoryCategory_preference: 'Preference',
+    memoryCategory_project: 'Project',
+    memoryCategory_decision: 'Decision',
+    memoryCategory_tool_note: 'Tool insight',
+    memoryCategory_privacy: 'Privacy',
+    memoryAspectUserFactsTitle: 'User facts',
+    memoryAspectUserFactsItem1: 'stable preferences and work rules',
+    memoryAspectUserFactsItem2: 'projects, roles, and long-term goals',
+    memoryAspectUserFactsItem3: 'people, organizations, and important relationships',
+    memoryAspectConversationsTitle: 'Conversation memory',
+    memoryAspectConversationsItem1: 'key decisions from previous chats',
+    memoryAspectConversationsItem2: 'decisions that affect future conversations',
+    memoryAspectConversationsItem3: 'context worth summarizing instead of keeping as raw history',
+    memoryAspectToolsTitle: 'Tool memory',
+    memoryAspectToolsItem1: 'calendar insights, not full event copies',
+    memoryAspectToolsItem2: 'Gmail priorities, not the whole inbox',
+    memoryAspectToolsItem3: 'alerts and recommendations with clear source',
+    memoryAspectPrivacyTitle: 'Control and privacy',
+    memoryAspectPrivacyItem1: 'every memory entry should be visible and editable',
+    memoryAspectPrivacyItem2: 'the user should be able to view, edit, and delete entries',
+    memoryAspectPrivacyItem3: 'sensitive data requires stricter categories and consent',
+    whisperTiny: 'Fast',
+    whisperBase: 'Balanced',
+    whisperSmall: 'Accurate',
+  },
+} satisfies Record<UiLanguage, Record<string, string>>;
+
 type ChatMemorySuggestion = MemorySuggestion & {
   draftCategory: MemorySuggestion['category'];
   draftContent: string;
@@ -104,7 +347,6 @@ type ChatMemorySuggestion = MemorySuggestion & {
   error: string | null;
 };
 
-type ChatInputMode = 'voice' | 'voiceText';
 type RealtimeModelId = (typeof realtimeModelOptions)[number]['value'];
 type RealtimeEffort = (typeof realtimeEffortOptions)[number]['value'];
 type VoiceCallStatus = 'idle' |'connecting' |'calling' | 'saving' | 'failed';
@@ -150,7 +392,14 @@ export function App() {
   const [hasGoogleClientId, setHasGoogleClientId] = useState(false);
   const [hasGoogleClientSecret, setHasGoogleClientSecret] = useState(false);
   const [activeWorkspaceView, setActiveWorkspaceView] = useState<'chat' | 'memory'>('chat');
-  const [activeChatMode, setActiveChatMode] = useState<ChatInputMode>('voiceText');
+  const [isPluginMenuOpen, setIsPluginMenuOpen] = useState(false);
+  const [activePluginMenuTab, setActivePluginMenuTab] = useState<'calendar' | 'gmail'>('calendar');
+  const [isPluginSettingsOpen, setIsPluginSettingsOpen] = useState(false);
+  const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
+  const [isVoiceModelMenuOpen, setIsVoiceModelMenuOpen] = useState(false);
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+  const [isIncognitoMode, setIsIncognitoMode] = useState(false);
+  const [uiLanguage, setUiLanguage] = useState<UiLanguage>('pl');
   const [voiceCallStatus, setVoiceCallStatus] = useState<VoiceCallStatus>('idle');
   const [realtimeModelId, setRealtimeModelId] = useState<RealtimeModelId>('gpt-realtime-mini');
   const [realtimeEffort, setRealtimeEffort] = useState<RealtimeEffort>('medium');
@@ -174,6 +423,9 @@ export function App() {
   const [shouldAskToSaveVoiceCall, setShouldAskToSaveVoiceCall] = useState(false);
   const autoSubmittedTranscriptRef = useRef('');
 
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const voiceModelMenuRef = useRef<HTMLDivElement | null>(null);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const realtimeOfferRef = useRef<RealtimeOffer | null>(null);
   const realtimeRemoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimeAssistantLineIdsRef = useRef<Record<string, string>>({});
@@ -183,6 +435,61 @@ export function App() {
   const isBusy = isRecording || isTranscribing || loadState === 'loading';
   const promptText = typedPrompt.trim();
   const canSend = promptText.length > 0 && chatState !== 'loading';
+  const copy = uiCopy[uiLanguage];
+  const localizedMemoryCategories = useMemo(
+    () =>
+      memoryCategories.map((category) => ({
+        ...category,
+        label: copy[`memoryCategory_${category.value}`] ?? category.label,
+      })),
+    [copy],
+  );
+  const localizedMemoryAspects = useMemo(
+    () => [
+      {
+        title: copy.memoryAspectUserFactsTitle,
+        items: [
+          copy.memoryAspectUserFactsItem1,
+          copy.memoryAspectUserFactsItem2,
+          copy.memoryAspectUserFactsItem3,
+        ],
+      },
+      {
+        title: copy.memoryAspectConversationsTitle,
+        items: [
+          copy.memoryAspectConversationsItem1,
+          copy.memoryAspectConversationsItem2,
+          copy.memoryAspectConversationsItem3,
+        ],
+      },
+      {
+        title: copy.memoryAspectToolsTitle,
+        items: [copy.memoryAspectToolsItem1, copy.memoryAspectToolsItem2, copy.memoryAspectToolsItem3],
+      },
+      {
+        title: copy.memoryAspectPrivacyTitle,
+        items: [
+          copy.memoryAspectPrivacyItem1,
+          copy.memoryAspectPrivacyItem2,
+          copy.memoryAspectPrivacyItem3,
+        ],
+      },
+    ],
+    [copy],
+  );
+  const localizedWhisperModelOptions = useMemo(
+    () =>
+      whisperModelOptions.map((option) => ({
+        ...option,
+        label:
+          option.id === 'Xenova/whisper-tiny'
+            ? copy.whisperTiny
+            : option.id === 'Xenova/whisper-small'
+              ? copy.whisperSmall
+              : copy.whisperBase,
+      })),
+    [copy],
+  );
 
   const hasVoiceCallHistory = voiceCallTranscriptLines.some(
     (line) => line.speaker === 'user' || line.speaker === 'assistant',
@@ -192,6 +499,10 @@ export function App() {
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [activeConversationId, conversations],
   );
+  const activeWhisperModel = useMemo(
+    () => localizedWhisperModelOptions.find((option) => option.id === modelId) ?? localizedWhisperModelOptions[0],
+    [localizedWhisperModelOptions, modelId],
+  );
   const googleCalendarConnection = useMemo(
     () => pluginConnections.find((connection) => connection.provider === 'google_calendar') ?? null,
     [pluginConnections],
@@ -200,6 +511,30 @@ export function App() {
     () => pluginConnections.find((connection) => connection.provider === 'gmail') ?? null,
     [pluginConnections],
   );
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node;
+
+      if (isContextMenuOpen && !contextMenuRef.current?.contains(target)) {
+        setIsContextMenuOpen(false);
+      }
+
+      if (isVoiceModelMenuOpen && !voiceModelMenuRef.current?.contains(target)) {
+        setIsVoiceModelMenuOpen(false);
+      }
+
+      if (isAccountMenuOpen && !accountMenuRef.current?.contains(target)) {
+        setIsAccountMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown);
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [isAccountMenuOpen, isContextMenuOpen, isVoiceModelMenuOpen]);
 
   useEffect(() => {
     let isMounted = true;
@@ -412,6 +747,12 @@ export function App() {
   function handleResetTranscript() {
     autoSubmittedTranscriptRef.current = '';
     resetTranscript();
+  }
+
+  function handlePromptInputChange(event: React.ChangeEvent<HTMLTextAreaElement>) {
+    setTypedPrompt(event.target.value);
+    event.target.style.height = 'auto';
+    event.target.style.height = `${Math.min(event.target.scrollHeight, 112)}px`;
   }
 
   function handleVoiceCallDisconnect() {
@@ -984,305 +1325,88 @@ export function App() {
 
   return (
     <main className="shell">
-      <section className="hero">
-        <div className="heroCopy">
-          <p className="eyebrow">Human First AI</p>
-          <h1>XO</h1>
-          <p className="lead">
-            Lokalny asystent z rozmowami, pamiecia miedzy watkami i spokojnym rytmem pracy.
-          </p>
-        </div>
-
-        <div className="statusPanel" aria-label="Status MVP">
-          <span className={isRecording ? 'pulse pulseActive' : 'pulse'} />
-          <div>
-            <strong>{isRecording ? 'Nagrywam po polsku' : 'Chat + pamiec'}</strong>
-            <p>
-              {isRecording
-                ? 'XO zapisuje dzwiek lokalnie i przygotuje transkrypcje.'
-                : 'Rozmowy sa zapisywane lokalnie w SQLite i dokladane do kontekstu modelu.'}
-            </p>
-          </div>
-        </div>
-      </section>
-
       <section className="chatPanel" aria-labelledby="assistant-heading">
-        <aside className="conversationRail" aria-label="Rozmowy">
-          <div className="pluginsPanel" aria-label="Wtyczki">
-            <div className="railHeader">
-              <div>
-                <p className="eyebrow">Integracje</p>
-                <h2>Wtyczki</h2>
-              </div>
-            </div>
-
-            <article className="pluginCard">
-              <div>
-                <strong>Google Calendar</strong>
-                <p>
-                  {googleCalendarConnection?.connected
-                    ? googleCalendarConnection.account_email ?? 'Polaczono konto Google'
-                    : 'Najpierw wklej Desktop OAuth Client ID, potem zaloguj sie przez Google.'}
-                </p>
-              </div>
-
-              {!googleCalendarConnection?.connected && (
-                <label className="pluginConfigField">
-                  <span>Desktop OAuth Client ID</span>
-                  <input
-                    value={googleClientId}
-                    onChange={(event) => {
-                      setGoogleClientId(event.target.value);
-                      setHasGoogleClientId(false);
-                    }}
-                    placeholder="...apps.googleusercontent.com"
-                  />
-                </label>
-              )}
-
-              {!googleCalendarConnection?.connected && (
-                <label className="pluginConfigField">
-                  <span>Desktop Client Secret</span>
-                  <input
-                    value={googleClientSecret}
-                    onChange={(event) => setGoogleClientSecret(event.target.value)}
-                    placeholder={hasGoogleClientSecret ? 'zapisany w systemowym sejfie' : 'wklej z Google Cloud / JSON'}
-                    type="password"
-                  />
-                  <small>
-                    {hasGoogleClientSecret
-                      ? 'Client Secret jest juz zapisany lokalnie.'
-                      : 'Nie trafia do frontendu po zapisaniu; backend trzyma go w systemowym sejfie.'}
-                  </small>
-                </label>
-              )}
-
-              <div className="pluginActions">
-                {googleCalendarConnection?.connected ? (
-                  <>
-                    <button
-                      className="secondaryButton"
-                      type="button"
-                      onClick={handleLoadCalendarEvents}
-                      disabled={pluginState !== 'idle'}
-                    >
-                      {pluginState === 'loadingEvents' ? 'Czytam' : 'Sprawdz'}
-                    </button>
-                    <button className="secondaryButton" type="button" onClick={handleDisconnectGoogleCalendar}>
-                      Odlacz
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      className="secondaryButton"
-                      type="button"
-                      onClick={handleSaveGoogleCalendarClientId}
-                      disabled={pluginState !== 'idle' || !googleClientId.trim()}
-                    >
-                      {pluginState === 'savingConfig' ? 'Zapisuje' : 'Zapisz'}
-                    </button>
-                    <button
-                      className="primaryButton"
-                      type="button"
-                      onClick={handleConnectGoogleCalendar}
-                      disabled={pluginState !== 'idle' || !hasGoogleClientId}
-                    >
-                      {pluginState === 'connecting' && connectingPlugin === 'calendar' ? 'Lacze' : 'Polacz'}
-                    </button>
-                  </>
-                )}
-              </div>
-
-              {calendarEvents.length > 0 && (
-                <div className="pluginEvents">
-                  {calendarEvents.slice(0, 3).map((event) => (
-                    <p key={event.id}>
-                      <strong>{event.summary}</strong>
-                      <span>{event.start ?? 'bez daty'}</span>
-                    </p>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            <article className="pluginCard">
-              <div>
-                <strong>Gmail</strong>
-                <p>
-                  {gmailConnection?.connected
-                    ? gmailConnection.account_email ?? 'Polaczono Gmail'
-                    : hasGoogleClientId
-                      ? 'Odczyt 20 ostatnich wiadomosci, wlacznie ze spamem i koszem.'
-                      : 'Najpierw zapisz Google OAuth Client ID w karcie Calendar.'}
-                </p>
-              </div>
-
-              <div className="pluginActions">
-                {gmailConnection?.connected ? (
-                  <>
-                    <button
-                      className="secondaryButton"
-                      type="button"
-                      onClick={handleLoadGmailMessages}
-                      disabled={pluginState !== 'idle'}
-                    >
-                      {pluginState === 'loadingMail' ? 'Czytam' : 'Sprawdz'}
-                    </button>
-                    <button className="secondaryButton" type="button" onClick={handleDisconnectGmail}>
-                      Odlacz
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    className="primaryButton"
-                    type="button"
-                    onClick={handleConnectGmail}
-                    disabled={pluginState !== 'idle' || !hasGoogleClientId}
-                  >
-                    {pluginState === 'connecting' && connectingPlugin === 'gmail' ? 'Lacze' : 'Polacz'}
-                  </button>
-                )}
-              </div>
-
-              {gmailMessages.length > 0 && (
-                <div className="pluginEvents">
-                  {gmailMessages.slice(0, 4).map((message) => (
-                    <p key={message.id}>
-                      <strong>{message.subject ?? 'Bez tematu'}</strong>
-                      <span>{message.from ?? 'nieznany nadawca'}</span>
-                    </p>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            {(pluginNotice || lastAuthUrl) && (
-              <div className="pluginNotice">
-                {pluginNotice && <p>{pluginNotice}</p>}
-                {lastAuthUrl && (
-                  <div className="pluginActions">
-                    <a href={lastAuthUrl} target="_blank" rel="noreferrer">
-                      Otworz logowanie
-                    </a>
-                    <button className="secondaryButton" type="button" onClick={handleCopyAuthUrl}>
-                      Kopiuj link
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {pluginError && <p className="pluginError">{pluginError}</p>}
-          </div>
-
-          <div className="railHeader">
-            <div>
-              <p className="eyebrow">AI Agent</p>
-              <h2 id="assistant-heading">Obszar pracy</h2>
-            </div>
-            <button className="iconButton" type="button" onClick={handleNewConversation} title="Nowy chat">
-              +
-            </button>
-          </div>
-
-          <div className="workspaceTabs" aria-label="Widoki">
-            <button
-              className={activeWorkspaceView === 'chat' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
-              type="button"
-              onClick={() => setActiveWorkspaceView('chat')}
-            >
-              Chaty
-            </button>
-            <button
-              className={activeWorkspaceView === 'memory' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
-              type="button"
-              onClick={() => setActiveWorkspaceView('memory')}
-            >
-              Pamiec
-            </button>
-          </div>
-
-          {activeWorkspaceView === 'chat' && (
-            <>
-              <button
-                className={!activeConversationId ? 'conversationItem conversationItemActive' : 'conversationItem'}
-                type="button"
-                onClick={handleNewConversation}
-              >
-                <span>Nowa rozmowa</span>
-                <small>Pierwsza wiadomosc utworzy chat</small>
-              </button>
-
-              <div className="conversationList">
-                {conversations.map((conversation) => (
-                  <button
-                    className={
-                      conversation.id === activeConversationId
-                        ? 'conversationItem conversationItemActive'
-                        : 'conversationItem'
-                    }
-                    key={conversation.id}
-                    type="button"
-                    onClick={() => setActiveConversationId(conversation.id)}
-                  >
-                    <span>{conversation.title}</span>
-                    <small>{conversation.last_message ?? 'Brak wiadomosci'}</small>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </aside>
+        <SidePanel
+          copy={copy}
+          activeWorkspaceView={activeWorkspaceView}
+          conversations={conversations}
+          activeConversationId={activeConversationId}
+          isAccountMenuOpen={isAccountMenuOpen}
+          accountMenuRef={accountMenuRef}
+          onBrandClick={() => {
+            setActiveWorkspaceView('chat');
+            setActiveConversationId(null);
+            setMessages([]);
+          }}
+          onNewConversation={handleNewConversation}
+          onOpenPlugins={() => setIsPluginMenuOpen(true)}
+          onWorkspaceViewChange={setActiveWorkspaceView}
+          onConversationSelect={setActiveConversationId}
+          onAccountToggle={() => setIsAccountMenuOpen((current) => !current)}
+        />
 
         {activeWorkspaceView === 'chat' ? (
-          <section className="assistantPanel" aria-label="Aktywna rozmowa">
-          <div className="assistantHeader">
-            <div>
-              <p className="eyebrow">AI Agent</p>
-              <h2>{activeConversation?.title ?? 'Nowa rozmowa'}</h2>
-            </div>
-            <span className="languageBadge">{chatState === 'loading' ? 'typing' : 'memory on'}</span>
-          </div>
-
-          <div className="workspaceTabs chatModeTabs" aria-label="Tryb chatu">
-            <button
-              className={activeChatMode === 'voice' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
-              type="button"
-              onClick={() => setActiveChatMode('voice')}
-            >
-              Glos
-            </button>
-            <button
-              className={activeChatMode === 'voiceText' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
-              type="button"
-              onClick={() => setActiveChatMode('voiceText')}
-            >
-              Glos + tekst
-            </button>
-          </div>
+          <ChatSection
+            eyebrow={copy.chat}
+            title={activeConversation?.title ?? copy.newConversation}
+            actions={
+              <div className="assistantHeaderActions">
+                <button
+                  className="languageToggle"
+                  type="button"
+                  onClick={() => setUiLanguage((current) => (current === 'pl' ? 'en' : 'pl'))}
+                >
+                  <span aria-hidden="true">🇺🇸</span>
+                  {copy.languageButton}
+                </button>
+                <button
+                  className={isIncognitoMode ? 'incognitoToggle incognitoToggleActive' : 'incognitoToggle'}
+                  type="button"
+                  onClick={() => setIsIncognitoMode((current) => !current)}
+                  aria-pressed={isIncognitoMode}
+                >
+                  <span className="incognitoIconWrap" aria-hidden="true">
+                    <svg className="incognitoIcon" viewBox="0 0 24 24">
+                      <path d="M4 10h16" />
+                      <path d="M7 10 9 5h6l2 5" />
+                      <circle cx="8" cy="14" r="3" />
+                      <circle cx="16" cy="14" r="3" />
+                      <path d="M11 14h2" />
+                    </svg>
+                    {isIncognitoMode && <span className="incognitoSlash" />}
+                  </span>
+                  {isIncognitoMode ? copy.normalMode : copy.incognito}
+                </button>
+              </div>
+            }
+          >
 
           <div className="messageList" aria-live="polite">
-            {messages.length > 0 ? (
+            {!activeConversationId ? (
+              <LandingPage language={uiLanguage} />
+            ) : messages.length > 0 ? (
               messages.map((message) => (
                 <div className="messageGroup" key={message.id}>
                   <article
                     className={message.role === 'user' ? 'messageBubble messageBubbleUser' : 'messageBubble'}
                   >
-                    <strong>{message.role === 'user' ? 'Ty' : 'XO'}</strong>
+                    <div className="messageBubbleMeta">
+                      <strong>{message.role === 'user' ? 'Ty' : 'Assistant'}</strong>
+                      <time dateTime="00:00">00:00</time>
+                    </div>
                     <p>{message.content}</p>
                   </article>
 
                   {message.role === 'assistant' &&
                     (chatMemorySuggestions[message.id] ?? []).length > 0 && (
-                      <div className="memorySuggestions" aria-label="Sugestie pamieci">
-                        <strong>XO moze zapamietac</strong>
+                      <div className="memorySuggestions" aria-label={copy.memorySuggestionsLabel}>
+                        <strong>{copy.assistantCanRemember}</strong>
                         {(chatMemorySuggestions[message.id] ?? []).map((suggestion) => (
                           <article className="memorySuggestion" key={suggestion.id}>
                             {suggestion.isEditing ? (
                               <div className="memorySuggestionEditor">
                                 <label className="memoryField">
-                                  <span>Kategoria</span>
+                                  <span>{copy.category}</span>
                                   <select
                                     value={suggestion.draftCategory}
                                     onChange={(event) =>
@@ -1294,7 +1418,7 @@ export function App() {
                                     }
                                     disabled={suggestion.status === 'saving'}
                                   >
-                                    {memoryCategories
+                                    {localizedMemoryCategories
                                       .filter((category) => category.value !== 'tool_note')
                                       .map((category) => (
                                         <option key={category.value} value={category.value}>
@@ -1304,7 +1428,7 @@ export function App() {
                                   </select>
                                 </label>
                                 <label className="memoryField">
-                                  <span>Tresc</span>
+                                  <span>{copy.content}</span>
                                   <textarea
                                     value={suggestion.draftContent}
                                     onChange={(event) =>
@@ -1337,10 +1461,10 @@ export function App() {
                                 disabled={suggestion.status === 'saving' || suggestion.status === 'saved'}
                               >
                                 {suggestion.status === 'saving'
-                                  ? 'Zapisuje'
+                                  ? copy.saving
                                   : suggestion.status === 'saved'
-                                    ? 'Zapisano'
-                                    : 'Zapisz'}
+                                    ? copy.saved
+                                    : copy.save}
                               </button>
                               {!suggestion.isEditing && suggestion.status !== 'saved' && (
                                 <button
@@ -1348,7 +1472,7 @@ export function App() {
                                   type="button"
                                   onClick={() => handleEditMemorySuggestion(message.id, suggestion.id)}
                                 >
-                                  Edytuj
+                                  {copy.edit}
                                 </button>
                               )}
                               {suggestion.status !== 'saved' && (
@@ -1358,7 +1482,7 @@ export function App() {
                                   onClick={() => handleRejectMemorySuggestion(message.id, suggestion.id)}
                                   disabled={suggestion.status === 'saving'}
                                 >
-                                  Odrzuc
+                                  {copy.reject}
                                 </button>
                               )}
                             </div>
@@ -1384,14 +1508,14 @@ export function App() {
               ))
             ) : (
               <div className="emptyChat">
-                <strong>Nowy chat jest gotowy.</strong>
-                <p>Zapytaj o cos, a XO zapisze rozmowe i bedzie ja pamietal w kolejnych watkach.</p>
+                <strong>Nowa rozmowa jest gotowa.</strong>
+                <p>Wyślij wiadomość, aby rozpocząć.</p>
               </div>
             )}
 
             {chatState === 'loading' && (
               <article className="messageBubble messageBubbleBusy">
-                <strong>XO</strong>
+                <strong>Assistant</strong>
                 <p>mysle...</p>
               </article>
             )}
@@ -1399,177 +1523,37 @@ export function App() {
 
           {chatError && <p className="voiceError">{chatError}</p>}
 
-          <form className="promptForm" onSubmit={handleChatSubmit}>
-            {activeChatMode === 'voice' ? (
-              <section className="voiceCallPanel" aria-label="Chat glosowy">
-                <div>
-                  <p className="eyebrow">Realtime voice</p>
-                  <h3>Chat glosowy</h3>
-                  <p>Wybierz ustawienia i otworz male okienko rozmowy.</p>
-                </div>
-
-                <div className="voiceCallPreview" aria-hidden="true">
-                  <span className="voiceMiniOrb" />
-                  <div>
-                    <strong>{voiceCallStatus === 'saving' ? 'Zapisuje rozmowe' : 'Gotowy'}</strong>
-                    <span>Status: {voiceCallStatus === 'saving' ? 'zapisywanie' : 'bez polaczenia'}</span>
-                  </div>
-                </div>
-
-                <div className="voiceCallSettings">
-                  <label className="voiceModelField">
-                    <span>Model</span>
-                    <select
-                      value={realtimeModelId}
-                      onChange={(event) => setRealtimeModelId(event.target.value as RealtimeModelId)}
-                      disabled={voiceCallStatus === 'calling'}
-                    >
-                      {realtimeModelOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="voiceModelField">
-                    <span>Effort</span>
-                    <select
-                      value={realtimeEffort}
-                      onChange={(event) => setRealtimeEffort(event.target.value as RealtimeEffort)}
-                      disabled={voiceCallStatus === 'calling'}
-                    >
-                      {realtimeEffortOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-
-                <div className="voiceCallActions">
-                  <button
-                    className={
-                      voiceCallStatus !== 'idle'
-                        ? 'voiceButton voiceButtonActive'
-                        : 'voiceButton'
-                    }
-                    type="button"
-                    onClick={handleVoiceCallToggle}
-                    disabled={voiceCallStatus === 'saving'}
-                    aria-pressed={voiceCallStatus !== 'idle'}
-                  >
-                    <span className="micIcon" aria-hidden="true" />
-                    {voiceCallStatus === 'saving' ? 'Zapisuje' : 'Zadzwon'}
-                  </button>
-                  <span className="voiceCallStatus">
-                    Backend Realtime nie jest jeszcze podlaczony.
-                  </span>
-                </div>
-              </section>
-            ) : (
-              <>
-                <label className="promptLabel" htmlFor="prompt">
-                  Twoja wiadomosc
-                </label>
-                <textarea
-                  id="prompt"
-                  className="promptInput"
-                  value={typedPrompt}
-                  onChange={(event) => setTypedPrompt(event.target.value)}
-                  placeholder="Napisz do XO albo uzyj nagrywania glosu, ktore wysle wiadomosc automatycznie po pauzie."
-                  rows={5}
-                />
-
-                <div className="inlineVoicePanel" aria-label="Glosowe wejscie czatu">
-                  <div className="inlineVoiceHeader">
-                    <div>
-                      <strong>{getVoiceButtonLabel(recordingState, loadState)}</strong>
-                      <p>{getTranscriptPlaceholder(recordingState, loadState)}</p>
-                    </div>
-                    <span className="languageBadge">{modelId}</span>
-                  </div>
-
-                  <label className="voiceModelField">
-                    <span>Model glosowy</span>
-                    <select
-                      value={modelId}
-                      onChange={(event) => setModelId(event.target.value as WhisperModelId)}
-                      disabled={isRecording || isTranscribing || loadState === 'loading'}
-                    >
-                      {whisperModelOptions.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.label} - {option.description}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <div className="voiceControls">
-                    <button
-                      className={isRecording ? 'voiceButton voiceButtonActive' : 'voiceButton'}
-                      type="button"
-                      onClick={handleVoiceButton}
-                      disabled={!isSupported || isTranscribing || loadState === 'loading' || chatState === 'loading'}
-                      aria-pressed={isRecording}
-                    >
-                      <span className="micIcon" aria-hidden="true" />
-                      {isRecording ? 'Zatrzymaj' : 'Dyktuj'}
-                    </button>
-                    <button
-                      className="secondaryButton"
-                      type="button"
-                      onClick={loadModel}
-                      disabled={!isSupported || loadState === 'loading' || loadState === 'ready'}
-                    >
-                      {loadState === 'ready' ? 'Model gotowy' : 'Zaladuj model'}
-                    </button>
-                    <button className="secondaryButton" type="button" onClick={handleResetTranscript}>
-                      Wyczysc glos
-                    </button>
-                  </div>
-
-                  <div className="meterPanel" aria-label="Poziom mikrofonu">
-                    <div className="meterHeader">
-                      <span>Poziom mikrofonu</span>
-                      <span>{getLevelLabel(inputLevel, peakInputLevel)}</span>
-                    </div>
-                    <div className="meterTrack">
-                      <span className="meterFill" style={{ width: `${Math.round(inputLevel * 100)}%` }} />
-                    </div>
-                  </div>
-
-                  {!isSupported && (
-                    <p className="voiceNotice">
-                      Ta przegladarka nie udostepnia nagrywania audio przez MediaRecorder.
-                    </p>
-                  )}
-
-                  {error && <p className="voiceError">{error}</p>}
-
-                  {(transcript || isBusy) && (
-                    <div className={isBusy ? 'transcriptBox transcriptBoxBusy' : 'transcriptBox'} aria-live="polite">
-                      {transcript ? (
-                        <p>{transcript}</p>
-                      ) : (
-                        <p className="placeholderText">{getTranscriptPlaceholder(recordingState, loadState)}</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div className="promptActions">
-                  <button className="primaryButton" type="submit" disabled={!canSend}>
-                    {chatState === 'loading' ? 'Wysylam' : 'Wyslij'}
-                  </button>
-                  <button className="secondaryButton" type="button" onClick={handleClearPrompt}>
-                    Wyczysc prompt
-                  </button>
-                </div>
-              </>
-            )}
-          </form>
+          <ChatInput
+            copy={copy}
+            typedPrompt={typedPrompt}
+            canSend={canSend}
+            chatState={chatState}
+            isContextMenuOpen={isContextMenuOpen}
+            contextMenuRef={contextMenuRef}
+            onContextMenuToggle={() => setIsContextMenuOpen((current) => !current)}
+            onPromptInputChange={handlePromptInputChange}
+            onSubmit={handleChatSubmit}
+            isRecording={isRecording}
+            isSupported={isSupported}
+            isTranscribing={isTranscribing}
+            isBusy={isBusy}
+            loadState={loadState}
+            error={error}
+            transcript={transcript}
+            activeWhisperModel={activeWhisperModel}
+            whisperModelOptions={localizedWhisperModelOptions}
+            modelId={modelId}
+            onModelIdChange={setModelId}
+            isVoiceModelMenuOpen={isVoiceModelMenuOpen}
+            voiceModelMenuRef={voiceModelMenuRef}
+            onVoiceModelMenuToggle={() => setIsVoiceModelMenuOpen((current) => !current)}
+            onVoiceModelMenuClose={() => setIsVoiceModelMenuOpen(false)}
+            onVoiceButton={handleVoiceButton}
+            voiceCallStatus={voiceCallStatus}
+            onVoiceCallToggle={handleVoiceCallToggle}
+            footerText={copy.composerFooter}
+            transcriptPlaceholder={getTranscriptPlaceholder(recordingState, loadState, copy)}
+          />
             <audio ref={realtimeRemoteAudioRef} autoPlay />
           {voiceCallStatus !== 'idle' && (
             <div className="voiceCallOverlay" role="dialog" aria-modal="true" aria-label="Aktywne polaczenie glosowe">
@@ -1645,115 +1629,252 @@ export function App() {
               </div>
             </div>
           )}
-          </section>
+          </ChatSection>
         ) : (
-          <section className="assistantPanel" aria-label="Pamiec XO">
-            <div className="assistantHeader">
-              <div>
-                <p className="eyebrow">Memory</p>
-                <h2>Pamiec XO</h2>
-              </div>
-              <span className="languageBadge">{memoryRecords.length} wpisow</span>
-            </div>
-
-            <div className="memoryPanel">
-              <form className="memoryEditor" onSubmit={handleMemorySubmit}>
-                <label className="memoryField">
-                  <span>Kategoria</span>
-                  <select
-                    value={memoryCategory}
-                    onChange={(event) => setMemoryCategory(event.target.value as MemoryCategory)}
-                  >
-                    {memoryCategories.map((category) => (
-                      <option key={category.value} value={category.value}>
-                        {category.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="memoryField">
-                  <span>Co XO ma pamietac</span>
-                  <textarea
-                    value={memoryContent}
-                    onChange={(event) => setMemoryContent(event.target.value)}
-                    placeholder="Np. Uzytkownik woli konkretne odpowiedzi po polsku i chce aktualizacji Features.md przy zmianach funkcji."
-                    rows={4}
-                  />
-                </label>
-
-                <div className="promptActions">
-                  <button className="primaryButton" type="submit" disabled={memoryState !== 'idle'}>
-                    {memoryState === 'saving'
-                      ? 'Zapisuje'
-                      : editingMemoryId
-                        ? 'Zapisz zmiany'
-                        : 'Dodaj pamiec'}
-                  </button>
-                  {editingMemoryId && (
-                    <button className="secondaryButton" type="button" onClick={resetMemoryForm}>
-                      Anuluj edycje
-                    </button>
-                  )}
-                </div>
-              </form>
-
-              {memoryNotice && <p className="memoryNotice">{memoryNotice}</p>}
-              {memoryError && <p className="voiceError">{memoryError}</p>}
-
-              <div className="memoryList" aria-live="polite">
-                {memoryRecords.length > 0 ? (
-                  memoryRecords.map((record) => (
-                    <article className="memoryRecord" key={record.id}>
-                      <div>
-                        <strong>{getMemoryCategoryLabel(record.category)}</strong>
-                        <p>{record.content}</p>
-                        <small>
-                          {getMemorySourceLabel(record)} | aktualizacja: {formatDateTime(record.updated_at)}
-                        </small>
-                      </div>
-                      <div className="memoryRecordActions">
-                        <button
-                          className="secondaryButton"
-                          type="button"
-                          onClick={() => handleEditMemoryRecord(record)}
-                          disabled={memoryState !== 'idle'}
-                        >
-                          Edytuj
-                        </button>
-                        <button
-                          className="secondaryButton dangerButton"
-                          type="button"
-                          onClick={() => handleDeleteMemoryRecord(record.id)}
-                          disabled={memoryState !== 'idle'}
-                        >
-                          Usun
-                        </button>
-                      </div>
-                    </article>
-                  ))
-                ) : (
-                  <div className="emptyChat">
-                    <strong>Brak jawnych wpisow pamieci.</strong>
-                    <p>Dodaj pierwsza rzecz, ktora XO ma stabilnie pamietac w kolejnych rozmowach.</p>
-                  </div>
-                )}
-              </div>
-
-              {memoryAspects.map((aspect) => (
-                <article className="memorySection" key={aspect.title}>
-                  <h3>{aspect.title}</h3>
-                  <ul>
-                    {aspect.items.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </article>
-              ))}
-            </div>
-          </section>
+          <Memory
+            copy={copy}
+            memoryAspects={localizedMemoryAspects}
+            memoryCategories={localizedMemoryCategories}
+            memoryRecords={memoryRecords}
+            memoryCategory={memoryCategory}
+            memoryContent={memoryContent}
+            editingMemoryId={editingMemoryId}
+            memoryError={memoryError}
+            memoryNotice={memoryNotice}
+            memoryState={memoryState}
+            onMemorySubmit={handleMemorySubmit}
+            onMemoryCategoryChange={setMemoryCategory}
+            onMemoryContentChange={setMemoryContent}
+            onResetMemoryForm={resetMemoryForm}
+            onEditMemoryRecord={handleEditMemoryRecord}
+            onDeleteMemoryRecord={handleDeleteMemoryRecord}
+            getMemoryCategoryLabel={(category) =>
+              localizedMemoryCategories.find((item) => item.value === category)?.label ?? copy.memory
+            }
+            getMemorySourceLabel={getMemorySourceLabel}
+            formatDateTime={formatDateTime}
+          />
         )}
       </section>
+
+      {isPluginMenuOpen && (
+        <div className="pluginDrawerOverlay" role="dialog" aria-modal="true" aria-label={copy.pluginDrawerLabel}>
+          <section className="pluginDrawer">
+            <div className="pluginDrawerHeader">
+              <div>
+                <p className="eyebrow">{copy.plugins}</p>
+                <h2>{copy.integrations}</h2>
+              </div>
+              <button
+                className="iconButton"
+                type="button"
+                onClick={() => setIsPluginMenuOpen(false)}
+                title={copy.closePlugins}
+              >
+                x
+              </button>
+            </div>
+
+            <div className="pluginDrawerLayout">
+              <div className="pluginDrawerMain">
+                <div className="workspaceTabs" aria-label={copy.pluginTabsLabel}>
+                  <button
+                    className={activePluginMenuTab === 'calendar' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
+                    type="button"
+                    onClick={() => setActivePluginMenuTab('calendar')}
+                  >
+                    Google Calendar
+                  </button>
+                  <button
+                    className={activePluginMenuTab === 'gmail' ? 'workspaceTab workspaceTabActive' : 'workspaceTab'}
+                    type="button"
+                    onClick={() => setActivePluginMenuTab('gmail')}
+                  >
+                    Gmail
+                  </button>
+                </div>
+
+                {activePluginMenuTab === 'calendar' ? (
+                  <article className="pluginCard">
+                    <div>
+                      <strong>Google Calendar</strong>
+                      <p>
+                        {googleCalendarConnection?.connected
+                          ? googleCalendarConnection.account_email ?? copy.connectedGoogleAccount
+                          : copy.connectCalendarDescription}
+                      </p>
+                    </div>
+
+                    <div className="pluginActions">
+                      {googleCalendarConnection?.connected ? (
+                        <>
+                          <button
+                            className="secondaryButton"
+                            type="button"
+                            onClick={handleLoadCalendarEvents}
+                            disabled={pluginState !== 'idle'}
+                          >
+                            {pluginState === 'loadingEvents' ? copy.read : copy.check}
+                          </button>
+                          <button className="secondaryButton" type="button" onClick={handleDisconnectGoogleCalendar}>
+                            {copy.disconnectPlugin}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="primaryButton"
+                          type="button"
+                          onClick={handleConnectGoogleCalendar}
+                          disabled={pluginState !== 'idle' || !hasGoogleClientId}
+                        >
+                          {pluginState === 'connecting' && connectingPlugin === 'calendar' ? copy.connecting : copy.connect}
+                        </button>
+                      )}
+                      <button
+                        className="secondaryButton"
+                        type="button"
+                        onClick={() => setIsPluginSettingsOpen((current) => !current)}
+                      >
+                        {copy.settings}
+                      </button>
+                    </div>
+
+                    {calendarEvents.length > 0 && (
+                      <div className="pluginEvents">
+                        {calendarEvents.slice(0, 3).map((event) => (
+                          <p key={event.id}>
+                            <strong>{event.summary}</strong>
+                            <span>{event.start ?? copy.noDate}</span>
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                ) : (
+                  <article className="pluginCard">
+                    <div>
+                      <strong>Gmail</strong>
+                      <p>
+                        {gmailConnection?.connected
+                          ? gmailConnection.account_email ?? copy.connectedGmailAccount
+                          : copy.connectGmailDescription}
+                      </p>
+                    </div>
+
+                    <div className="pluginActions">
+                      {gmailConnection?.connected ? (
+                        <>
+                          <button
+                            className="secondaryButton"
+                            type="button"
+                            onClick={handleLoadGmailMessages}
+                            disabled={pluginState !== 'idle'}
+                          >
+                            {pluginState === 'loadingMail' ? copy.read : copy.check}
+                          </button>
+                          <button className="secondaryButton" type="button" onClick={handleDisconnectGmail}>
+                            {copy.disconnectPlugin}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="primaryButton"
+                          type="button"
+                          onClick={handleConnectGmail}
+                          disabled={pluginState !== 'idle' || !hasGoogleClientId}
+                        >
+                          {pluginState === 'connecting' && connectingPlugin === 'gmail' ? copy.connecting : copy.connect}
+                        </button>
+                      )}
+                      <button
+                        className="secondaryButton"
+                        type="button"
+                        onClick={() => setIsPluginSettingsOpen((current) => !current)}
+                      >
+                        {copy.settings}
+                      </button>
+                    </div>
+
+                    {gmailMessages.length > 0 && (
+                      <div className="pluginEvents">
+                        {gmailMessages.slice(0, 4).map((message) => (
+                          <p key={message.id}>
+                            <strong>{message.subject ?? copy.noSubject}</strong>
+                            <span>{message.from ?? copy.unknownSender}</span>
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                )}
+
+                {(pluginNotice || lastAuthUrl) && (
+                  <div className="pluginNotice">
+                    {pluginNotice && <p>{pluginNotice}</p>}
+                    {lastAuthUrl && (
+                      <div className="pluginActions">
+                        <a href={lastAuthUrl} target="_blank" rel="noreferrer">
+                          {copy.openLogin}
+                        </a>
+                        <button className="secondaryButton" type="button" onClick={handleCopyAuthUrl}>
+                          {copy.copyLink}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {pluginError && <p className="pluginError">{pluginError}</p>}
+              </div>
+
+              {isPluginSettingsOpen && (
+                <aside className="pluginSettingsPanel" aria-label={copy.pluginSettingsLabel}>
+                  <div>
+                    <p className="eyebrow">{copy.settings}</p>
+                    <h3>Google OAuth</h3>
+                  </div>
+
+                  <label className="pluginConfigField">
+                    <span>Desktop OAuth Client ID</span>
+                    <input
+                      value={googleClientId}
+                      onChange={(event) => {
+                        setGoogleClientId(event.target.value);
+                        setHasGoogleClientId(false);
+                      }}
+                      placeholder="...apps.googleusercontent.com"
+                    />
+                  </label>
+
+                  <label className="pluginConfigField">
+                    <span>Desktop Client Secret</span>
+                    <input
+                      value={googleClientSecret}
+                      onChange={(event) => setGoogleClientSecret(event.target.value)}
+                      placeholder={hasGoogleClientSecret ? copy.savedClientSecret : copy.pasteGoogleSecret}
+                      type="password"
+                    />
+                    <small>
+                      {hasGoogleClientSecret
+                        ? copy.clientSecretStored
+                        : copy.backendKeepsSecret}
+                    </small>
+                  </label>
+
+                  <button
+                    className="primaryButton"
+                    type="button"
+                    onClick={handleSaveGoogleCalendarClientId}
+                    disabled={pluginState !== 'idle' || !googleClientId.trim()}
+                  >
+                    {pluginState === 'savingConfig' ? copy.saving : copy.saveSettings}
+                  </button>
+                </aside>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
 
     </main>
   );
@@ -1844,20 +1965,20 @@ function getVoiceButtonLabel(recordingState: string, loadState: string) {
   return 'Nagraj';
 }
 
-function getTranscriptPlaceholder(recordingState: string, loadState: string) {
+function getTranscriptPlaceholder(recordingState: string, loadState: string, copy: Record<string, string>) {
   if (loadState === 'loading') {
-    return 'Laduje model Whisper. Pierwszy raz moze potrwac dluzej.';
+    return copy.loadingWhisperPlaceholder;
   }
 
   if (recordingState === 'recording') {
-    return 'Mow po polsku. Po 3 sekundach ciszy XO sam zakonczy nagranie i wysle wiadomosc.';
+    return copy.recordingPlaceholder;
   }
 
   if (recordingState === 'transcribing') {
-    return 'Przepisuje nagranie i przygotowuje automatyczna wysylke...';
+    return copy.transcribingPlaceholder;
   }
 
-  return 'Kliknij Nagraj, powiedz cos po polsku, a XO wysle wiadomosc po wykryciu pauzy.';
+  return copy.idleTranscriptPlaceholder;
 }
 
 function getLevelLabel(inputLevel: number, peakInputLevel: number) {
@@ -1899,3 +2020,6 @@ function getErrorMessage(error: unknown) {
 
   return 'Cos poszlo nie tak.';
 }
+
+
+
