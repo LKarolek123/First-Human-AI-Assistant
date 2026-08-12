@@ -44,6 +44,7 @@ import { ChatInput } from './ChatInput';
 import { LandingPage } from './LandingPage';
 import { SidePanel } from './SidePanel';
 import { ChatSection } from './ChatSection';
+import { randomUUID } from 'crypto';
 
 const memoryAspects = [
   {
@@ -347,6 +348,16 @@ type ChatMemorySuggestion = MemorySuggestion & {
   error: string | null;
 };
 
+
+type TemporaryChatMessage = {
+  id: string,
+  conversation_id: string,
+  content: string,
+  role: 'user' | 'assistant',
+  created_at: number,
+  status?: 'pending' | 'sent' | 'failed',
+};
+
 type RealtimeModelId = (typeof realtimeModelOptions)[number]['value'];
 type RealtimeEffort = (typeof realtimeEffortOptions)[number]['value'];
 type VoiceCallStatus = 'idle' |'connecting' |'calling' | 'saving' | 'failed';
@@ -646,6 +657,24 @@ export function App() {
     setTypedPrompt('');
     setChatError(null);
     setChatState('loading');
+  
+   
+
+    const conversation_id = activeConversationId ?? crypto.randomUUID();
+    const isTemporaryConversation = activeConversationId === null;
+
+    const temporaryUserMessage: TemporaryChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: input,
+      created_at: Math.floor(Date.now() / 1000),
+      conversation_id: conversation_id,
+    };
+
+    setMessages((currentMessages) => [
+      ...currentMessages, temporaryUserMessage
+    ]);
+
 
     try {
       const response = await sendChatMessage({
@@ -654,11 +683,25 @@ export function App() {
       });
 
       setActiveConversationId(response.conversation.id);
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        response.user_message,
-        response.assistant_message,
-      ]);
+
+      
+      setMessages((currentMessages) => {
+        const lastMessage = currentMessages[currentMessages.length - 1];
+        if (lastMessage.id !== temporaryUserMessage.id) {
+          return [
+            ...currentMessages,
+            response.user_message,
+            response.assistant_message,
+          ];
+        }
+
+        return [
+          ...currentMessages.slice(0, -1),
+          response.user_message,
+          response.assistant_message,
+        ]
+      });
+      
       setChatMemorySuggestions((currentSuggestions) => ({
         ...currentSuggestions,
         [response.assistant_message.id]: response.memory_suggestions.map((suggestion) => ({
@@ -1016,7 +1059,7 @@ export function App() {
         type: 'answer',
         sdp: response.sdpAnswer,
       });
-      console.log('Realtime WebRTC connected with preview', response.preview);
+      // console.log('Realtime WebRTC connected with preview', response.preview);
       realtimeOfferRef.current = offer;
     } catch {
       setVoiceCallStatus('failed');
@@ -1392,7 +1435,9 @@ export function App() {
                   >
                     <div className="messageBubbleMeta">
                       <strong>{message.role === 'user' ? 'Ty' : 'Assistant'}</strong>
-                      <time dateTime="00:00">00:00</time>
+                      <time dateTime={new Date(message.created_at * 1000).toISOString()}>
+                        {formatDateTime(message.created_at)}
+                      </time>
                     </div>
                     <p>{message.content}</p>
                   </article>
