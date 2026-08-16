@@ -17,8 +17,24 @@ use tauri::{Manager, State};
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
 const OPENAI_REALTIME_CALLS_URL: &str = "https://api.openai.com/v1/realtime/calls";
 const DEFAULT_MODEL: &str = "gpt-4.1-mini";
-const CHAT_INSTRUCTIONS: &str = "Jestes XO, spokojnym asystentem Human First. Odpowiadaj po polsku, konkretnie i zyczliwie. Odpowiadaj na pytania w jezyku polskim, chyba ze uzytkownik rozpocznie z toba konwersacje w jezyku angielskim - wtedy odpowiadaj po angielsku. Masz pamietac wczesniejsze rozmowy uzytkownika, kiedy dostajesz je w kontekscie. Jawna pamiec ustawiona przez uzytkownika ma pierwszenstwo przed surowa historia rozmow. Nie udawaj dostepu do narzedzi, ktorych nie masz. Jesli kontekst z poprzednich rozmow pomaga, uzyj go naturalnie i dyskretnie.";
-const MEMORY_SUGGESTION_INSTRUCTIONS: &str = "Analizujesz tylko najnowsza wiadomosc uzytkownika, najnowsza odpowiedz XO i istniejace jawne wpisy pamieci. Nie uzywaj ani nie zakladaj zadnej innej historii. Zaproponuj maksymalnie 3 stabilne i przydatne wpisy pamieci na przyszle rozmowy: preferencje, decyzje, fakty projektowe, fakty o uzytkowniku lub stale ograniczenia pracy. Nie proponuj sekretow, hasel, tokenow, kluczy API, danych zdrowotnych ani prywatnych/wrazliwych danych o osobach trzecich. Nie proponuj informacji chwilowych, oczywistych, niepewnych ani duplikatow istniejacej pamieci. Nie proponuj wpisow pamieci dotyczacych preferowanego jezyka odpowiedzi, np. ze uzytkownik chce odpowiedzi po polsku albo po angielsku. Zwroc wylacznie poprawny JSON w formacie {\"suggestions\":[{\"content\":\"...\",\"category\":\"preference\",\"reason\":\"...\"}]}. Dozwolone category: user_fact, preference, project, decision, privacy.";
+
+const CHAT_INSTRUCTIONS: &str = "Jestes XO, spokojnym asystentem Human First. Odpowiadaj po polsku, konkretnie i zyczliwie. 
+Odpowiadaj na pytania w jezyku polskim, chyba ze uzytkownik rozpocznie z toba konwersacje w jezyku angielskim - wtedy odpowiadaj po angielsku. 
+Masz pamietac wczesniejsze rozmowy uzytkownika, kiedy dostajesz je w kontekscie. 
+Jawna pamiec ustawiona przez uzytkownika ma pierwszenstwo przed surowa historia rozmow. 
+Nie udawaj dostepu do narzedzi, ktorych nie masz. Jesli kontekst z poprzednich rozmow pomaga, uzyj go naturalnie i dyskretnie.";
+
+const MEMORY_SUGGESTION_INSTRUCTIONS: &str = "Analizujesz tylko najnowsza wiadomosc uzytkownika, najnowsza odpowiedz XO 
+i istniejace jawne wpisy pamieci. Nie uzywaj ani nie zakladaj zadnej innej historii. 
+Zaproponuj maksymalnie 3 stabilne i przydatne wpisy pamieci na przyszle rozmowy: preferencje, decyzje, fakty projektowe, fakty o uzytkowniku 
+lub stale ograniczenia pracy. Nie mogą być to dane chwilowe, które nie mają żadnego wpływu na użytkownika.
+Nie proponuj sekretow, hasel, tokenow, kluczy API, ani prywatnych/wrazliwych danych o osobach trzecich. 
+Zwracaj uwagę na samopoczucie użytkownika i problemy, o których do ciebie mówi.
+Nie proponuj informacji chwilowych, oczywistych, niepewnych ani duplikatow istniejacej pamieci. 
+Nie proponuj wpisow pamieci dotyczacych preferowanego jezyka odpowiedzi, np. ze uzytkownik chce odpowiedzi po polsku albo po angielsku. 
+Zwroc wylacznie poprawny JSON w formacie {\"suggestions\":[{\"content\":\"...\",\"category\":\"preference\",\"reason\":\"...\"}]}. 
+Dozwolone category: user_fact, preference, project, decision, privacy.";
+
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -47,6 +63,8 @@ Nie proponuj sekretow, hasel, tokenow, kluczy API, danych zdrowotnych ani prywat
 Nie dodawaj pola reason. Dozwolone category: user_fact, preference, project, decision, privacy.
 ";
 
+const TOOL_PLANNER_INSTRUCTIONS: &str = include_str!("prompts/tool_planner.md");
+
 struct AppState {
     db: Mutex<Connection>,
     pending_google_calendar_oauth: Mutex<Option<PendingGoogleOAuth>>,
@@ -64,6 +82,8 @@ struct ConversationSummary {
     title: String,
     created_at: i64,
     updated_at: i64,
+    status: String,
+    message_count: i64,
     last_message: Option<String>,
 }
 
@@ -83,6 +103,7 @@ struct ChatResponse {
     assistant_message: ChatMessage,
     memory_suggestions: Vec<MemorySuggestion>,
     memory_suggestion_analysis: MemorySuggestionAnalysis,
+    restored_from_archive: bool,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +140,18 @@ struct RealtimeCallConfigRequest {
     #[serde(rename = "userGoal")]
     user_goal: Option<String>,
    
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ToolPlan {
+  use_memory: bool,
+  check_email: bool,
+  check_calendar: bool,
+  modify_calendar: bool,
+  send_email: bool,
+  needs_clarification: bool,
+  clarification_question: Option<String>,
+  reason: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -180,7 +213,7 @@ struct OpenAIRealtimeAudioInputConfig {
     transcription: OpenAIRealtimeAudioInputTranscriptionConfig,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default, Debug)]
 struct MemoryRecord {
     id: String,
     category: String,
@@ -243,7 +276,7 @@ struct GoogleCalendarConnectProgress {
     connection: Option<PluginConnection>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default, Debug)]
 struct CalendarEventSummary {
     id: String,
     summary: String,
@@ -253,7 +286,7 @@ struct CalendarEventSummary {
     html_link: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default, Debug)]
 struct GmailMessageSummary {
     id: String,
     thread_id: Option<String>,
@@ -350,10 +383,12 @@ struct GmailHeader {
     value: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct ToolContext {
     calendar_events: Option<Vec<CalendarEventSummary>>,
     gmail_messages: Option<Vec<GmailMessageSummary>>,
+    memory_records: Option<Vec<MemoryRecord>>,
+    conversation_memory: Option<Vec<String>>,
     notes: Vec<String>,
 }
 
@@ -399,7 +434,20 @@ fn list_conversations(state: State<'_, AppState>) -> Result<Vec<ConversationSumm
         .lock()
         .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
 
+    cleanup_empty_conversations(&db)?;
+    archive_stale_conversations(&db)?;
     load_conversations(&db)
+}
+
+#[tauri::command]
+fn list_archived_conversations(state: State<'_, AppState>) -> Result<Vec<ConversationSummary>, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+    archive_stale_conversations(&db)?;
+    load_archived_conversations(&db)
 }
 
 #[tauri::command]
@@ -411,17 +459,65 @@ fn create_conversation(
         .db
         .lock()
         .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+    cleanup_empty_conversations(&db)?;
+    archive_stale_conversations(&db)?;
+    if let Some(empty_conversation) = load_empty_active_conversation(&db)? {
+        return Ok(empty_conversation);
+    }
+
     let now = unix_timestamp();
     let id = create_id("chat");
     let title = normalize_title(title.as_deref().unwrap_or("Nowa rozmowa"));
 
     db.execute(
-        "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO conversations (id, title, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, 'active')",
         params![id, title, now, now],
     )
     .map_err(|error| format!("Nie udalo sie utworzyc rozmowy. {error}"))?;
 
     load_conversation(&db, &id)
+}
+
+#[tauri::command]
+fn archive_conversation(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<ConversationSummary, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+    set_conversation_status(&db, &conversation_id, "archived")?;
+    load_conversation(&db, &conversation_id)
+}
+
+#[tauri::command]
+fn restore_conversation(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<ConversationSummary, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+    set_conversation_status(&db, &conversation_id, "active")?;
+    load_conversation(&db, &conversation_id)
+}
+
+#[tauri::command]
+fn delete_conversation(
+    conversation_id: String,
+    delete_linked_memory: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+    delete_conversation_with_memory_choice(&db, &conversation_id, delete_linked_memory)
 }
 
 #[tauri::command]
@@ -554,7 +650,7 @@ async fn save_voice_call_history(
         let title = normalize_title("Rozmowa glosowa");
 
         db.execute(
-            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO conversations (id, title, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, 'active')",
             params![conversation_id, title, now, now],
         )
         .map_err(|error| format!("Nie udalo sie utworzyc rozmowy glosowej. {error}"))?;
@@ -817,17 +913,19 @@ async fn send_chat_message(
         return Err("Wpisz pytanie albo uzyj transkrypcji z mikrofonu.".to_string());
     }
 
-    let (conversation_id, user_message) = {
+    let (conversation_id, user_message, restored_from_archive) = {
         let db = state
             .db
             .lock()
             .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
         let conversation_id = ensure_conversation(&db, conversation_id, &input)?;
+        let restored_from_archive = conversation_status(&db, &conversation_id)? == "archived";
         let user_message = insert_message(&db, &conversation_id, "user", &input)?;
 
-        (conversation_id, user_message)
+        (conversation_id, user_message, restored_from_archive)
     };
-    let tool_context = build_tool_context(&input, &state).await;
+    let tool_plan = plan_tools_for_input(&input).await?;
+    let tool_context = build_tool_context(&input, &tool_plan, &conversation_id, &state).await;
     let openai_input = {
         let db = state
             .db
@@ -917,6 +1015,7 @@ async fn send_chat_message(
         assistant_message,
         memory_suggestions,
         memory_suggestion_analysis,
+        restored_from_archive,
     })
 }
 
@@ -1461,7 +1560,8 @@ fn init_database(db_path: PathBuf) -> Result<Connection, String> {
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
           created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
+          updated_at INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived'))
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -1509,9 +1609,102 @@ fn init_database(db_path: PathBuf) -> Result<Connection, String> {
         ",
     )
     .map_err(|error| format!("Nie udalo sie przygotowac bazy XO. {error}"))?;
+    ensure_conversation_status_column(&db)?;
     ensure_memory_source_columns(&db)?;
 
     Ok(db)
+}
+
+/// Dodaje kolumne statusu rozmowy w istniejacych bazach, bez dotykania tresci rozmow.
+fn ensure_conversation_status_column(db: &Connection) -> Result<(), String> {
+    let columns = table_columns(db, "conversations")?;
+
+    if !columns.iter().any(|column| column == "status") {
+        db.execute(
+            "ALTER TABLE conversations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+            [],
+        )
+        .map_err(|error| format!("Nie udalo sie dodac statusu rozmow. {error}"))?;
+    }
+
+    Ok(())
+}
+
+/// Usuwa puste rozmowy, bo nie zawieraja danych uzytkownika ani wpisow historii do ochrony.
+fn cleanup_empty_conversations(db: &Connection) -> Result<(), String> {
+    db.execute(
+        "
+        DELETE FROM conversations
+        WHERE NOT EXISTS (
+          SELECT 1 FROM messages WHERE messages.conversation_id = conversations.id
+        )
+        ",
+        [],
+    )
+    .map_err(|error| format!("Nie udalo sie usunac pustych rozmow. {error}"))?;
+
+    Ok(())
+}
+
+/// Przenosi do archiwum aktywne rozmowy, ktore nie byly aktualizowane od ponad roku.
+fn archive_stale_conversations(db: &Connection) -> Result<(), String> {
+    let one_year_ago = unix_timestamp() - 365 * 24 * 60 * 60;
+
+    db.execute(
+        "UPDATE conversations SET status = 'archived' WHERE status = 'active' AND updated_at < ?1",
+        params![one_year_ago],
+    )
+    .map_err(|error| format!("Nie udalo sie zarchiwizowac starych rozmow. {error}"))?;
+
+    Ok(())
+}
+
+/// Zmienia status pojedynczej rozmowy, zachowujac wiadomosci i powiazane wpisy pamieci.
+fn set_conversation_status(
+    db: &Connection,
+    conversation_id: &str,
+    status: &str,
+) -> Result<(), String> {
+    let changed = db
+        .execute(
+            "UPDATE conversations SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status, unix_timestamp(), conversation_id],
+        )
+        .map_err(|error| format!("Nie udalo sie zmienic statusu rozmowy. {error}"))?;
+
+    if changed == 0 {
+        return Err("Nie znaleziono rozmowy.".to_string());
+    }
+
+    Ok(())
+}
+
+/// Usuwa rozmowe i zgodnie z wyborem uzytkownika usuwa powiazana pamiec albo odklada ja jako archived.
+fn delete_conversation_with_memory_choice(
+    db: &Connection,
+    conversation_id: &str,
+    delete_linked_memory: bool,
+) -> Result<(), String> {
+    ensure_conversation_exists(db, conversation_id)?;
+
+    if delete_linked_memory {
+        db.execute(
+            "DELETE FROM memory_records WHERE source_conversation_id = ?1",
+            params![conversation_id],
+        )
+        .map_err(|error| format!("Nie udalo sie usunac pamieci powiazanej z rozmowa. {error}"))?;
+    } else {
+        db.execute(
+            "UPDATE memory_records SET source_conversation_id = 'archived', updated_at = ?1 WHERE source_conversation_id = ?2",
+            params![unix_timestamp(), conversation_id],
+        )
+        .map_err(|error| format!("Nie udalo sie zachowac pamieci po usunieciu rozmowy. {error}"))?;
+    }
+
+    db.execute("DELETE FROM conversations WHERE id = ?1", params![conversation_id])
+        .map_err(|error| format!("Nie udalo sie usunac rozmowy. {error}"))?;
+
+    Ok(())
 }
 
 fn ensure_conversation(
@@ -1540,7 +1733,7 @@ fn ensure_conversation(
     let title = title_from_input(first_input);
 
     db.execute(
-        "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO conversations (id, title, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, 'active')",
         params![id, title, now, now],
     )
     .map_err(|error| format!("Nie udalo sie utworzyc rozmowy. {error}"))?;
@@ -1600,7 +1793,7 @@ fn insert_message(
 
 fn touch_conversation(db: &Connection, conversation_id: &str) -> Result<(), String> {
     db.execute(
-        "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+        "UPDATE conversations SET updated_at = ?1, status = 'active' WHERE id = ?2",
         params![unix_timestamp(), conversation_id],
     )
     .map_err(|error| format!("Nie udalo sie zaktualizowac rozmowy. {error}"))?;
@@ -1608,46 +1801,24 @@ fn touch_conversation(db: &Connection, conversation_id: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// Odczytuje status rozmowy przed zapisem, aby wykryc kontynuowanie chatu z archiwum.
+fn conversation_status(db: &Connection, conversation_id: &str) -> Result<String, String> {
+    db.query_row(
+        "SELECT status FROM conversations WHERE id = ?1",
+        params![conversation_id],
+        |row| row.get(0),
+    )
+    .map_err(|error| format!("Nie udalo sie odczytac statusu rozmowy. {error}"))
+}
+/// zwraca input zlozony z historii aktualnej rozmowy i odsyla to append_tool_context(input, ...) w celu zaaplikowania contextu z narzędzi
 fn build_openai_input(
     db: &Connection,
     conversation_id: &str,
     current_input: &str,
     tool_context: &ToolContext,
 ) -> Result<String, String> {
-    let memory = load_cross_conversation_memory(db, conversation_id)?;
-    let managed_memory = load_memory_records(db)?;
     let history = load_messages(db, conversation_id)?;
     let mut input = String::new();
-
-    input.push_str("Jawna pamiec XO ustawiona przez uzytkownika:\n");
-    if managed_memory.is_empty() {
-        input.push_str("- Brak jawnych wpisow pamieci.\n");
-    } else {
-        for item in managed_memory.iter().take(24) {
-            input.push_str("- [");
-            input.push_str(&memory_category_label(&item.category));
-            input.push_str(", ");
-            input.push_str(&memory_source_label(
-                &item.source_kind,
-                item.source_conversation_id.as_deref(),
-            ));
-            input.push_str("] ");
-            input.push_str(&truncate(&item.content, 360));
-            input.push('\n');
-        }
-    }
-
-    input.push('\n');
-    input.push_str("Pamiec z poprzednich rozmow XO:\n");
-    if memory.is_empty() {
-        input.push_str("- Brak jeszcze zapisanych poprzednich rozmow.\n");
-    } else {
-        for item in memory {
-            input.push_str("- ");
-            input.push_str(&item);
-            input.push('\n');
-        }
-    }
 
     input.push_str("\nHistoria aktualnej rozmowy:\n");
     if history.is_empty() {
@@ -2082,11 +2253,32 @@ fn table_columns(db: &Connection, table_name: &str) -> Result<Vec<String>, Strin
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Nie udalo sie odczytac kolumn bazy XO. {error}"))
 }
+/// Wywoluje planner OpenAI i parsuje odpowiedz modelu na ToolPlan.
+async fn plan_tools_for_input(input: &str) -> Result<ToolPlan, String> {
+    let planner_input = format!("Wiadomosc uzytkownika:\n{}", input);
 
-async fn build_tool_context(input: &str, state: &State<'_, AppState>) -> ToolContext {
+    let response_text = request_openai_text(
+        TOOL_PLANNER_INSTRUCTIONS,
+        &planner_input,
+    )
+    .await?;
+
+    let json_text = extract_json_payload(&response_text)
+        .ok_or_else(|| "Planner narzedzi nie zwrocil JSON.".to_string())?;
+
+    serde_json::from_str::<ToolPlan>(&json_text)
+        .map_err(|error| format!("Nie udało się odczytać planu narzędzi. {error} "))
+}
+
+async fn build_tool_context(
+    input: &str,
+    tool_plan: &ToolPlan,
+    conversation_id: &str,
+    state: &State<'_, AppState>,
+) -> ToolContext {
     let mut context = ToolContext::default();
-
-    if should_use_calendar(input) {
+    log::info!("build_tool_context in progress");
+    if tool_plan.check_calendar {
         match load_calendar_events_for_chat(state).await {
             Ok(events) => context.calendar_events = Some(events),
             Err(error) => context
@@ -2095,7 +2287,7 @@ async fn build_tool_context(input: &str, state: &State<'_, AppState>) -> ToolCon
         }
     }
 
-    if should_use_gmail(input) {
+    if tool_plan.check_email {
         match load_gmail_messages_for_chat(state).await {
             Ok(messages) => context.gmail_messages = Some(messages),
             Err(error) => context
@@ -2104,7 +2296,35 @@ async fn build_tool_context(input: &str, state: &State<'_, AppState>) -> ToolCon
         }
     }
 
+    if tool_plan.use_memory {
+        match search_memory_for_chat(state, conversation_id, input) {
+            Ok((records, conversations)) => {
+                context.memory_records = Some(records);
+                context.conversation_memory = Some(conversations);
+            }
+            Err(error) => {
+                context
+                .notes
+                .push(format!("Nie udalo sie przeszukac pamieci XO: {error}"));            
+            }
+        }
+    }
+
+    if tool_plan.send_email {
+        context.notes.push(
+            "Uzytkownik poprosil o wysłanie wiadomości email. XO nie ma jeszcze wykonawcy wysylki, wiec nie wolno twierdzic, ze mail zostal wyslany. Przygotuj szkic i popros o potwierdzenie.".to_string(),
+        );
+    }
+
+    if tool_plan.modify_calendar {
+        context.notes.push(
+            "Uzytkownik poprosil o zmiane kalendarza. XO nie ma jeszcze wykonawcy zapisu, wiec nie wolno twierdzic, ze kalendarz zostal zmieniony. Przygotuj propozycje i popros o potwierdzenie.".to_string(),
+        );
+    }
+
+    log::info!("ToolContenxt: {:?}", context);
     context
+
 }
 
 async fn load_calendar_events_for_chat(
@@ -2141,6 +2361,61 @@ async fn load_gmail_messages_for_chat(
     }
 
     load_recent_gmail_messages().await
+}
+
+fn search_memory_for_chat(
+     state: &State<'_, AppState>,
+     conversation_id: &str,
+     input: &str,
+) -> Result<(Vec<MemoryRecord>, Vec<String>), String> {
+    let keywords = memory_search_keywords(input);
+
+    if keywords.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc db".to_string())?;
+
+    let memory_records = load_memory_records(&db)?
+        .into_iter()
+        .filter(|record|  text_matches_keywords(&record.content, &keywords))
+        .take(12)
+        .collect::<Vec<_>>();
+
+    let conversation_memory = load_cross_conversation_memory(&db, conversation_id)?
+        .into_iter()
+        .filter(|item| text_matches_keywords(item, &keywords))
+        .take(12)
+        .collect::<Vec<_>>();
+
+    Ok((memory_records, conversation_memory))
+}
+
+/// funkcja rozczłonkowuje string na tokeny
+fn memory_search_keywords(input: &str) ->Vec<String> {
+    input
+        .to_lowercase()
+        .split_whitespace()
+        .map(|word| {
+            word
+                .trim_matches(|character: char| !character.is_alphanumeric())
+                .to_string()
+            
+        })
+        .filter(|word| word.chars().count() >= 4)
+        .take(12)
+        .collect()
+}
+
+fn text_matches_keywords(text: &str, keywords: &[String]) -> bool {
+    let normalized = text.to_lowercase();
+
+    keywords.iter()
+    .any(|keyword| normalized.contains(keyword))
 }
 
 fn should_use_calendar(input: &str) -> bool {
@@ -2191,7 +2466,9 @@ fn contains_any(input: &str, patterns: &[&str]) -> bool {
 fn append_tool_context(input: &mut String, tool_context: &ToolContext) {
     let has_any_context = tool_context.calendar_events.is_some()
         || tool_context.gmail_messages.is_some()
-        || !tool_context.notes.is_empty();
+        || !tool_context.notes.is_empty()
+        || tool_context.memory_records.is_some()
+        || tool_context.conversation_memory.is_some();
 
     if !has_any_context {
         input.push_str("- Brak wywolanych narzedzi dla tej wiadomosci.\n");
@@ -2253,9 +2530,41 @@ fn append_tool_context(input: &mut String, tool_context: &ToolContext) {
             }
         }
     }
+    if let Some(memory_records) = &tool_context.memory_records {
+        input.push_str("Pasujące wpisy z pamięci użytkownika\n");
+        for memory_record in memory_records {
+            input.push_str("- [");
+            input.push_str(&memory_record.category);
+            input.push_str("] )");
+            input.push_str(&memory_record.content);
+            input.push('\n');
+        };
+    }
+
+    if let Some(conversation_memory_records) = &tool_context.conversation_memory {
+        input.push_str("Pasujące wpisy z poprzednich konwersacji użytkownika\n");
+        for conversation_memory_record in conversation_memory_records {
+            input.push_str(conversation_memory_record);
+            input.push('\n');
+        }
+    }
 }
 
+
 fn load_conversations(db: &Connection) -> Result<Vec<ConversationSummary>, String> {
+    load_conversations_by_status(db, "active")
+}
+
+/// Laduje rozmowy archiwalne, oddzielone od glownej historii czatow.
+fn load_archived_conversations(db: &Connection) -> Result<Vec<ConversationSummary>, String> {
+    load_conversations_by_status(db, "archived")
+}
+
+/// Laduje rozmowy o wybranym statusie wraz z liczba wiadomosci i ostatnia wiadomoscia.
+fn load_conversations_by_status(
+    db: &Connection,
+    status: &str,
+) -> Result<Vec<ConversationSummary>, String> {
     let mut statement = db
         .prepare(
             "
@@ -2264,6 +2573,12 @@ fn load_conversations(db: &Connection) -> Result<Vec<ConversationSummary>, Strin
               c.title,
               c.created_at,
               c.updated_at,
+              c.status,
+              (
+                SELECT COUNT(*)
+                FROM messages
+                WHERE conversation_id = c.id
+              ) AS message_count,
               (
                 SELECT content
                 FROM messages
@@ -2272,17 +2587,45 @@ fn load_conversations(db: &Connection) -> Result<Vec<ConversationSummary>, Strin
                 LIMIT 1
               ) AS last_message
             FROM conversations c
+            WHERE c.status = ?1
             ORDER BY c.updated_at DESC
             ",
         )
         .map_err(|error| format!("Nie udalo sie pobrac rozmow. {error}"))?;
 
     let rows = statement
-        .query_map([], map_conversation_summary)
+        .query_map(params![status], map_conversation_summary)
         .map_err(|error| format!("Nie udalo sie pobrac rozmow. {error}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Nie udalo sie pobrac rozmow. {error}"))
+}
+
+/// Znajduje istniejaca pusta aktywna rozmowe, aby frontend nie tworzyl wielu pustych czatow.
+fn load_empty_active_conversation(db: &Connection) -> Result<Option<ConversationSummary>, String> {
+    db.query_row(
+        "
+        SELECT
+          c.id,
+          c.title,
+          c.created_at,
+          c.updated_at,
+          c.status,
+          0 AS message_count,
+          NULL AS last_message
+        FROM conversations c
+        WHERE c.status = 'active'
+          AND NOT EXISTS (
+            SELECT 1 FROM messages WHERE conversation_id = c.id
+          )
+        ORDER BY c.updated_at DESC
+        LIMIT 1
+        ",
+        [],
+        map_conversation_summary,
+    )
+    .optional()
+    .map_err(|error| format!("Nie udalo sie pobrac pustej rozmowy. {error}"))
 }
 
 fn load_conversation(
@@ -2296,6 +2639,12 @@ fn load_conversation(
           c.title,
           c.created_at,
           c.updated_at,
+          c.status,
+          (
+            SELECT COUNT(*)
+            FROM messages
+            WHERE conversation_id = c.id
+          ) AS message_count,
           (
             SELECT content
             FROM messages
@@ -2346,7 +2695,9 @@ fn map_conversation_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Convers
         title: row.get(1)?,
         created_at: row.get(2)?,
         updated_at: row.get(3)?,
-        last_message: row.get(4)?,
+        status: row.get(4)?,
+        message_count: row.get(5)?,
+        last_message: row.get(6)?,
     })
 }
 
@@ -3157,7 +3508,7 @@ fn normalize_for_memory_compare(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-
+/// funkcja przyjmuje prompt instrukcji i input wiadomosci do usera, nastepnie zwraca odpowiedz jako odpowiedz modelu lub tez error
 async fn request_openai_text(instructions: &str, input: &str) -> Result<String, String> {
     let api_key = std::env::var("OPENAI_API_KEY")
         .map_err(|_| "Brakuje OPENAI_API_KEY w konfiguracji srodowiska.".to_string())?;
@@ -3304,7 +3655,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_conversations,
+            list_archived_conversations,
             create_conversation,
+            archive_conversation,
+            restore_conversation,
+            delete_conversation,
             get_conversation_messages,
             save_voice_call_history,
             list_memory_records,

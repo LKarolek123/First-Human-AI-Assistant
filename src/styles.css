@@ -1542,6 +1542,191 @@ textarea {
   line-height: 1.2;
 }
 
+.conversationContextMenu {
+  position: fixed;
+  z-index: 40;
+  display: grid;
+  min-width: 178px;
+  padding: 7px;
+  border: 1px solid #424247;
+  border-radius: 8px;
+  background: #2b2c31;
+  box-shadow: 0 18px 40px rgb(0 0 0 / 36%);
+}
+
+.conversationContextMenu button {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #f1f1f4;
+  cursor: pointer;
+  text-align: left;
+}
+
+.conversationContextMenu button:hover {
+  background: #3a3b42;
+}
+
+.conversationContextDanger {
+  color: #ff9aa8 !important;
+}
+
+.conversationDialogOverlay {
+  position: fixed;
+  z-index: 45;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 62%);
+  backdrop-filter: blur(6px);
+}
+
+.conversationDialog {
+  position: relative;
+  display: grid;
+  gap: 18px;
+  width: min(480px, 100%);
+  padding: 24px;
+  padding-top: 48px;
+  border: 1px solid #3c3d42;
+  border-radius: 8px;
+  background: #24252a;
+  color: #ececf1;
+  box-shadow: 0 28px 90px rgb(0 0 0 / 48%);
+}
+
+.conversationDialogDanger {
+  border-color: #554047;
+}
+
+.conversationDialogBack {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #3f4047;
+  border-radius: 999px;
+  background: #2f3036;
+  color: #d8d8df;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.conversationDialogBack:hover {
+  border-color: #555761;
+  background: #393a41;
+  color: #ffffff;
+}
+
+.conversationDialogHeader {
+  display: grid;
+  gap: 8px;
+}
+
+.conversationDialogKicker {
+  color: #9fa0aa;
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.conversationDialogHeader h2 {
+  margin: 0;
+  color: #ececf1;
+  font-size: 1.12rem;
+  line-height: 1.22;
+}
+
+.conversationDialogHeader p {
+  margin: 0;
+  color: #b9bac4;
+  line-height: 1.45;
+}
+
+.conversationDialogCheck {
+  display: inline-flex;
+  width: fit-content;
+  gap: 9px;
+  align-items: center;
+  color: #d4d4dc;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.conversationDialogCheck input {
+  width: 16px;
+  height: 16px;
+  accent-color: #ececf1;
+}
+
+.conversationDialogActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.conversationDialogActions button {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.conversationDialogPrimary {
+  border: 1px solid #ececf1;
+  background: #ececf1;
+  color: #202123;
+}
+
+.conversationDialogPrimary:hover {
+  background: #ffffff;
+}
+
+.conversationDialogSecondary {
+  border: 1px solid #44464e;
+  background: #303139;
+  color: #ececf1;
+}
+
+.conversationDialogSecondary:hover {
+  border-color: #5b5d67;
+  background: #3a3b44;
+}
+
+.conversationDialogDangerButton {
+  border: 1px solid #6f3f49;
+  background: #4a2830;
+  color: #ffdbe1;
+}
+
+.conversationDialogDangerButton:hover {
+  border-color: #8b4e5b;
+  background: #5a303a;
+}
+
+.conversationNotice {
+  width: min(760px, 100%);
+  margin: 0 auto;
+  padding: 10px 12px;
+  border: 1px solid #33483f;
+  border-radius: 8px;
+  background: #1f2b27;
+  color: #d8f3e5;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
 .assistantPanel {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0;

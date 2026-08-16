@@ -13,6 +13,8 @@ export type ConversationSummary = {
   title: string;
   created_at: number;
   updated_at: number;
+  status: 'creating' | 'active' | 'archived';
+  message_count: number;
   last_message: string | null;
 };
 
@@ -22,6 +24,7 @@ export type ChatResponse = {
   assistant_message: ChatMessage;
   memory_suggestions: MemorySuggestion[];
   memory_suggestion_analysis: MemorySuggestionAnalysis;
+  restored_from_archive: boolean;
 };
 
 export type VoiceCallHistoryLine = {
@@ -77,12 +80,47 @@ export async function listConversations() {
   return invoke<ConversationSummary[]>('list_conversations');
 }
 
+export async function listArchivedConversations() {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(getTauriOnlyMessage());
+  }
+
+  return invoke<ConversationSummary[]>('list_archived_conversations');
+}
+
 export async function createConversation(title?: string) {
   if (!isTauriRuntimeAvailable()) {
     throw new Error(getTauriOnlyMessage());
   }
 
   return invoke<ConversationSummary>('create_conversation', { title });
+}
+
+export async function archiveConversation(conversationId: string) {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(getTauriOnlyMessage());
+  }
+
+  return invoke<ConversationSummary>('archive_conversation', { conversationId });
+}
+
+export async function restoreConversation(conversationId: string) {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(getTauriOnlyMessage());
+  }
+
+  return invoke<ConversationSummary>('restore_conversation', { conversationId });
+}
+
+export async function deleteConversation(conversationId: string, deleteLinkedMemory: boolean) {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(getTauriOnlyMessage());
+  }
+
+  return invoke<void>('delete_conversation', {
+    conversationId,
+    deleteLinkedMemory,
+  });
 }
 
 export async function getConversationMessages(conversationId: string) {

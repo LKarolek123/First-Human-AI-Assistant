@@ -30,12 +30,18 @@ export type GetRealtimeCallConfigRequest = {
 
 export type CreateRealtimeCallRequest = GetRealtimeCallConfigRequest & {
     sdpOffer: string;
-}
+};
 
 export type CreateRealtimeCallResponse = {
     sdpAnswer: string;
     preview: RealtimePromptPreview;
-}
+};
+
+export type ToolPlan = {
+    use_gmail: boolean;
+    use_calendar: boolean;
+    reason: string;
+};
 
 /**
  * wywoluje backend aplikacji, przekazuje mu request z model, instructions, voice i preview zapytania.

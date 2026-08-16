@@ -1,0 +1,39 @@
+| # | Zdanie usera | use_memory | check_email | check_calendar | modify_calendar | send_email | needs_clarification | Uzasadnienie |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| 1 | Czy Tomek odpisał? | false | true | false | false | false | false | pytanie o odpowiedź w poczcie |
+| 2 | Co mam dziś w kalendarzu? | false | false | true | false | false | false | odczyt planu dnia |
+| 3 | Dodaj spotkanie z Anią jutro o 15 | false | false | false | true | false | false | utworzenie wydarzenia |
+| 4 | Napisz maila do Adama Kowalskiego, że się spóźnię | false | false | false | false | true | false | nowy email, osoba jednoznaczna |
+| 5 | Napisz maila do Tomka, że będę później | false | false | false | false | true | true | email jasny, adresat niejednoznaczny |
+| 6 | Sprawdź Gmaila i odpisz Adamowi, że potwierdzam | false | true | false | false | true | true | odpowiedź na maila, ale adresat po imieniu |
+| 7 | Sprawdź Gmaila i odpisz Adamowi Kowalskiemu, że potwierdzam | false | true | false | false | true | false | odczyt i odpowiedź na maila |
+| 8 | Znajdź maila od Kasi i odpowiedz na niego | false | true | false | false | true | true | trzeba znaleźć maila, ale osoba może być niejednoznaczna |
+| 9 | Znajdź maila od Kasi Zielińskiej i odpowiedz na niego | false | true | false | false | true | false | osoba jednoznaczna |
+| 10 | Podsumuj mój tydzień: maile, spotkania i ustalenia projektowe | true | true | true | false | false | false | pamięć + email + kalendarz |
+| 11 | Przenieś jutrzejsze spotkanie i wyślij maila do zespołu | false | false | true | true | true | false | kalendarz plus email |
+| 12 | Czy ktoś pisał do mnie w nocy? | false | true | false | false | false | false | nowe wiadomości |
+| 13 | Ile mam spotkań w tym tygodniu? | false | false | true | false | false | false | agregacja wydarzeń |
+| 14 | Usuń spotkanie z dentystą | false | false | false | true | false | false | usunięcie wydarzenia |
+| 15 | Odpowiedz na maila od Kasi | false | true | false | false | true | true | odpowiedź na istniejącego maila, osoba niejednoznaczna |
+| 16 | Odpowiedz na maila od Kasi Zielińskiej | false | true | false | false | true | false | odpowiedź na istniejącego maila |
+| 17 | Czy nakładają mi się dwa spotkania? | false | false | true | false | false | false | konflikt w kalendarzu |
+| 18 | Zarezerwuj mi czas jutro od 9 do 11 | false | false | false | true | false | false | utworzenie bloku czasu |
+| 19 | Czy przyszło potwierdzenie rezerwacji? | false | true | false | false | false | false | mail transakcyjny |
+| 20 | Dodaj spotkanie i poinformuj Adama mailem | false | false | false | true | true | true | email do osoby po imieniu |
+| 21 | Dodaj spotkanie i poinformuj Adama Kowalskiego mailem | false | false | false | true | true | false | kalendarz plus email |
+| 22 | Sprawdź czy mam jutro czas i jeśli tak, napisz maila do klienta | false | false | true | false | true | false | kalendarz plus email |
+| 23 | Sprawdź czy klient odpisał | false | true | false | false | false | false | poczta |
+| 24 | Czy spotkanie z maila od Ani jest już w kalendarzu? | false | true | true | false | false | false | porównanie email plus kalendarz |
+| 25 | Czy mam maila z godziną spotkania? | false | true | false | false | false | false | pytanie o maila |
+| 26 | Co ustaliliśmy wczoraj? | true | false | false | false | false | false | wcześniejsza rozmowa |
+| 27 | Przypomnij, nad czym pracujemy | true | false | false | false | false | false | pamięć projektu |
+| 28 | Jakie mam preferencje co do stylu odpowiedzi? | true | false | false | false | false | false | jawna pamięć/preferencje |
+| 29 | Co mówiłem o projekcie XO w zeszłym tygodniu? | true | false | false | false | false | false | przeszukanie historii rozmów |
+| 30 | Czy klient, o którym rozmawialiśmy, odpisał? | true | true | false | false | false | false | pamięć identyfikuje klienta, email sprawdza odpowiedź |
+| 31 | Napisz maila do osoby, z którą wczoraj omawiałem ofertę | true | false | false | false | true | true | pamięć może znaleźć osobę, ale adresat wymaga potwierdzenia |
+| 32 | Dodaj follow-up do sprawy, o której rozmawialiśmy rano | true | false | false | true | false | true | pamięć potrzebna, ale wydarzenie/termin niejasne |
+| 33 | Napisz do Tomka, że się spóźnię | false | false | false | false | false | true | brak kanału |
+| 34 | Wyślij SMS do mamy, że będę później | false | false | false | false | false | true | SMS nieobsługiwany |
+| 35 | Napisz do Piotra na Messengerze | false | false | false | false | false | true | Messenger nieobsługiwany |
+| 36 | Co to jest RAG? | false | false | false | false | false | false | wiedza ogólna |
+| 37 | Jak się masz? | false | false | false | false | false | false | small talk |

@@ -6,11 +6,15 @@ import {
   type MemoryRecord,
   type MemorySuggestion,
   type MemorySuggestionAnalysis,
+  archiveConversation,
   createMemoryRecord,
+  deleteConversation,
   deleteMemoryRecord,
   getConversationMessages,
+  listArchivedConversations,
   listConversations,
   listMemoryRecords,
+  restoreConversation,
   saveMemorySuggestion,
   saveVoiceCallHistory,
   sendChatMessage,
@@ -48,46 +52,46 @@ import { randomUUID } from 'crypto';
 
 const memoryAspects = [
   {
-    title: 'Fakty o uzytkowniku',
+    title: 'Fakty o użytkowniku',
     items: [
       'stale preferencje i zasady pracy',
-      'projekty, role i dlugoterminowe cele',
-      'osoby, organizacje i wazne relacje',
+      'projekty, role i długoterminowe cele',
+      'osoby, organizacje i ważne relacje',
     ],
   },
   {
-    title: 'Pamiec rozmow',
+    title: 'Pamięć rozmów',
     items: [
-      'najwazniejsze ustalenia z poprzednich chatow',
-      'decyzje, ktore maja wplyw na kolejne rozmowy',
-      'kontekst, ktory warto streszczac zamiast trzymac w surowej historii',
+      'najważniejsze ustalenia z poprzednich chatów',
+      'decyzje, które mają wpływ na kolejne rozmowy',
+      'kontekst, który warto streszczać zamiast trzymać w surowej historii',
     ],
   },
   {
-    title: 'Pamiec z narzedzi',
+    title: 'Pamięć z narzędzi',
     items: [
-      'wnioski z kalendarza, nie pelna kopia wydarzen',
-      'priorytety z Gmaila, nie cala skrzynka',
-      'alerty i rekomendacje z jasnym zrodlem',
+      'wnioski z kalendarza, nie pełna kopia wydarzeń',
+      'priorytety z Gmaila, nie cała skrzynka',
+      'alerty i rekomendacje z jasnym źródłem',
     ],
   },
   {
-    title: 'Kontrola i prywatnosc',
+    title: 'Kontrola i prywatność',
     items: [
-      'kazdy zapis pamieci powinien byc widoczny i edytowalny',
-      'uzytkownik powinien moc podejrzec, edytowac i usunac wpis',
-      'dane wrazliwe wymagaja ostrozniejszych kategorii i zgody',
+      'każdy zapis pamięci powinien być widoczny i edytowalny',
+      'użytkownik powinien móc podejrzeć, edytować i usunąć wpis',
+      'dane wrażliwe wymagają ostrożniejszych kategorii i zgody',
     ],
   },
 ];
 
 const memoryCategories: Array<{ value: MemoryCategory; label: string }> = [
-  { value: 'user_fact', label: 'Fakt o uzytkowniku' },
+  { value: 'user_fact', label: 'Fakt o użytkowniku' },
   { value: 'preference', label: 'Preferencja' },
   { value: 'project', label: 'Projekt' },
   { value: 'decision', label: 'Decyzja' },
-  { value: 'tool_note', label: 'Wniosek z narzedzia' },
-  { value: 'privacy', label: 'Prywatnosc' },
+  { value: 'tool_note', label: 'Wniosek z narzędzia' },
+  { value: 'privacy', label: 'Prywatność' },
 ];
 
 const realtimeModelOptions = [
@@ -108,6 +112,20 @@ const uiCopy = {
     plugins: 'Wtyczki',
     memory: 'Pamięć',
     chats: 'Chaty',
+    archivedChats: 'Archiwalne chaty',
+    archivedChatsHint: 'Pokaż ukryte rozmowy',
+    archive: 'Archiwizuj',
+    restore: 'Przywróć',
+    deleteChatMemoryPrompt: 'Usuwasz historię tego chatu. Czy chcesz usunąć też powiązaną z nim pamięć?',
+    deleteWithMemory: 'Usuń z pamięcią',
+    deleteKeepMemory: 'Usuń, ale zachowaj pamięć',
+    cancelDelete: 'Cofnij',
+    archiveChatPrompt: 'Przenieść ten chat do archiwum?',
+    archiveChatBody: 'Historia rozmowy i powiązana pamięć zostaną zachowane. Chat zniknie z głównej listy i będzie dostępny w archiwum.',
+    confirmArchive: 'Archiwizuj chat',
+    doNotAskAgain: 'Nie pytaj ponownie',
+    cancelArchive: 'Cofnij',
+    conversationRestoredNotice: 'Przeniesiono konwersację do głównego katalogu.',
     newChat: 'Nowy chat',
     chat: 'Czat',
     newConversation: 'Nowa rozmowa',
@@ -225,6 +243,20 @@ const uiCopy = {
     plugins: 'Plugins',
     memory: 'Memory',
     chats: 'Chats',
+    archivedChats: 'Archived chats',
+    archivedChatsHint: 'Show hidden conversations',
+    archive: 'Archive',
+    restore: 'Restore',
+    deleteChatMemoryPrompt: 'You are about deleting your chat history. Would you like to delete memory assiociated with this chat?',
+    deleteWithMemory: 'Delete with memory',
+    deleteKeepMemory: 'Delete , but keep the memory',
+    cancelDelete: 'Back',
+    archiveChatPrompt: 'Move this chat to the archive?',
+    archiveChatBody: 'The chat history and associated memory will stay intact. The chat will leave the main list and remain available in archived chats.',
+    confirmArchive: 'Archive chat',
+    doNotAskAgain: 'Do not ask again',
+    cancelArchive: 'Back',
+    conversationRestoredNotice: 'Conversation moved to the main folder.',
     newChat: 'New chat',
     chat: 'Chat',
     newConversation: 'New conversation',
@@ -367,6 +399,23 @@ type VoiceCallTranscriptLine = {
   text: string;
 };
 
+type ConversationMenuState = {
+  conversation: ConversationSummary;
+  x: number;
+  y: number;
+} | null;
+
+type DeleteConversationDialogState = {
+  conversation: ConversationSummary;
+} | null;
+
+type ArchiveConversationDialogState = {
+  conversation: ConversationSummary;
+  skipFuturePrompts: boolean;
+} | null;
+
+const skipArchivePromptStorageKey = 'xo.skipArchiveConversationPrompt';
+
 export function App() {
   const {
     error,
@@ -386,6 +435,7 @@ export function App() {
 
   const [typedPrompt, setTypedPrompt] = useState('');
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [archivedConversations, setArchivedConversations] = useState<ConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -403,6 +453,13 @@ export function App() {
   const [hasGoogleClientId, setHasGoogleClientId] = useState(false);
   const [hasGoogleClientSecret, setHasGoogleClientSecret] = useState(false);
   const [activeWorkspaceView, setActiveWorkspaceView] = useState<'chat' | 'memory'>('chat');
+  const [isArchiveViewOpen, setIsArchiveViewOpen] = useState(false);
+  const [conversationMenu, setConversationMenu] = useState<ConversationMenuState>(null);
+  const [deleteConversationDialog, setDeleteConversationDialog] =
+    useState<DeleteConversationDialogState>(null);
+  const [archiveConversationDialog, setArchiveConversationDialog] =
+    useState<ArchiveConversationDialogState>(null);
+  const [conversationNotice, setConversationNotice] = useState<string | null>(null);
   const [isPluginMenuOpen, setIsPluginMenuOpen] = useState(false);
   const [activePluginMenuTab, setActivePluginMenuTab] = useState<'calendar' | 'gmail'>('calendar');
   const [isPluginSettingsOpen, setIsPluginSettingsOpen] = useState(false);
@@ -507,8 +564,11 @@ export function App() {
   );
 
   const activeConversation = useMemo(
-    () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
-    [activeConversationId, conversations],
+    () =>
+      conversations.find((conversation) => conversation.id === activeConversationId) ??
+      archivedConversations.find((conversation) => conversation.id === activeConversationId) ??
+      null,
+    [activeConversationId, archivedConversations, conversations],
   );
   const activeWhisperModel = useMemo(
     () => localizedWhisperModelOptions.find((option) => option.id === modelId) ?? localizedWhisperModelOptions[0],
@@ -538,6 +598,10 @@ export function App() {
       if (isAccountMenuOpen && !accountMenuRef.current?.contains(target)) {
         setIsAccountMenuOpen(false);
       }
+
+      if (conversationMenu) {
+        setConversationMenu(null);
+      }
     }
 
     document.addEventListener('pointerdown', handlePointerDown);
@@ -545,7 +609,7 @@ export function App() {
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown);
     };
-  }, [isAccountMenuOpen, isContextMenuOpen, isVoiceModelMenuOpen]);
+  }, [conversationMenu, isAccountMenuOpen, isContextMenuOpen, isVoiceModelMenuOpen]);
 
   useEffect(() => {
     let isMounted = true;
@@ -580,6 +644,14 @@ export function App() {
 
         if (nextConversations[0]) {
           setActiveConversationId(nextConversations[0].id);
+        }
+      })
+      .catch((loadError) => setChatError(getErrorMessage(loadError)));
+
+    listArchivedConversations()
+      .then((nextConversations) => {
+        if (isMounted) {
+          setArchivedConversations(nextConversations);
         }
       })
       .catch((loadError) => setChatError(getErrorMessage(loadError)));
@@ -661,7 +733,6 @@ export function App() {
    
 
     const conversation_id = activeConversationId ?? crypto.randomUUID();
-    const isTemporaryConversation = activeConversationId === null;
 
     const temporaryUserMessage: TemporaryChatMessage = {
       id: crypto.randomUUID(),
@@ -720,6 +791,15 @@ export function App() {
       setConversations((currentConversations) =>
         upsertConversation(currentConversations, response.conversation),
       );
+      if (response.restored_from_archive) {
+        setArchivedConversations((currentConversations) =>
+          currentConversations.filter((conversation) => conversation.id !== response.conversation.id),
+        );
+        setIsArchiveViewOpen(false);
+        setActiveWorkspaceView('chat');
+        setConversationNotice(copy.conversationRestoredNotice);
+        window.setTimeout(() => setConversationNotice(null), 2000);
+      }
 
       return true;
     } catch (sendError) {
@@ -732,7 +812,7 @@ export function App() {
     } finally {
       setChatState('idle');
     }
-  }, [activeConversationId]);
+  }, [activeConversationId, copy.conversationRestoredNotice]);
 
   useEffect(() => {
     const voiceInput = transcript.trim();
@@ -757,7 +837,7 @@ export function App() {
     event.preventDefault();
 
     if (!promptText) {
-      setChatError('Wpisz wiadomosc.');
+      setChatError('Wpisz wiadomość.');
       return;
     }
 
@@ -765,10 +845,156 @@ export function App() {
   }
 
   function handleNewConversation() {
+    const existingEmptyConversation = conversations.find(
+      (conversation) => conversation.message_count === 0,
+    );
+
+    if (existingEmptyConversation) {
+      setIsArchiveViewOpen(false);
+      setActiveWorkspaceView('chat');
+      setActiveConversationId(existingEmptyConversation.id);
+      return;
+    }
+
+    if (!activeConversationId && messages.length === 0) {
+      return;
+    }
+
+    setIsArchiveViewOpen(false);
     setActiveConversationId(null);
     setMessages([]);
     setTypedPrompt('');
     setChatError(null);
+  }
+
+  async function refreshConversationLists() {
+    const [nextConversations, nextArchivedConversations] = await Promise.all([
+      listConversations(),
+      listArchivedConversations(),
+    ]);
+
+    setConversations(nextConversations);
+    setArchivedConversations(nextArchivedConversations);
+  }
+
+  // Otwiera menu kontekstowe rozmowy w miejscu klikniecia prawym przyciskiem.
+  function handleConversationContextMenu(
+    conversation: ConversationSummary,
+    position: { x: number; y: number },
+  ) {
+    setConversationMenu({
+      conversation,
+      ...position,
+    });
+  }
+
+  // Sprawdza lokalną preferencję UI, czy użytkownik chce pomijać pytanie przed archiwizacją.
+  function shouldSkipArchivePrompt() {
+    return window.localStorage.getItem(skipArchivePromptStorageKey) === 'true';
+  }
+
+  // Rozpoczyna archiwizację: pokazuje potwierdzenie albo wykonuje akcję, jeśli użytkownik wyłączył pytanie.
+  async function handleRequestArchiveConversation(conversation: ConversationSummary) {
+    setConversationMenu(null);
+
+    if (shouldSkipArchivePrompt()) {
+      await handleArchiveConversation(conversation, false);
+      return;
+    }
+
+    setArchiveConversationDialog({
+      conversation,
+      skipFuturePrompts: false,
+    });
+  }
+
+  // Archiwizuje rozmowę bez usuwania jej treści ani powiązanych wpisów pamięci.
+  async function handleArchiveConversation(
+    conversation: ConversationSummary,
+    skipFuturePrompts: boolean,
+  ) {
+    try {
+      if (skipFuturePrompts) {
+        window.localStorage.setItem(skipArchivePromptStorageKey, 'true');
+      }
+
+      const archivedConversation = await archiveConversation(conversation.id);
+
+      setConversations((currentConversations) =>
+        currentConversations.filter((item) => item.id !== conversation.id),
+      );
+      setArchivedConversations((currentConversations) =>
+        upsertConversation(currentConversations, archivedConversation),
+      );
+      if (activeConversationId === conversation.id) {
+        setActiveConversationId(null);
+        setMessages([]);
+      }
+      setConversationMenu(null);
+      setArchiveConversationDialog(null);
+      setChatError(null);
+    } catch (archiveError) {
+      setChatError(getErrorMessage(archiveError));
+    }
+  }
+
+  // Przywraca rozmowę z archiwum do głównej listy, zachowując całą historię i pamięć.
+  async function handleRestoreConversation(conversation: ConversationSummary) {
+    try {
+      const restoredConversation = await restoreConversation(conversation.id);
+
+      setArchivedConversations((currentConversations) =>
+        currentConversations.filter((item) => item.id !== conversation.id),
+      );
+      setConversations((currentConversations) =>
+        upsertConversation(currentConversations, restoredConversation),
+      );
+      setIsArchiveViewOpen(false);
+      setActiveWorkspaceView('chat');
+      setActiveConversationId(restoredConversation.id);
+      setConversationMenu(null);
+      setChatError(null);
+    } catch (restoreError) {
+      setChatError(getErrorMessage(restoreError));
+    }
+  }
+
+  // Rozpoczyna usuwanie rozmowy; puste rozmowy usuwa od razu, a dla niepustych pyta tylko o pamięć.
+  async function handleRequestDeleteConversation(conversation: ConversationSummary) {
+    setConversationMenu(null);
+
+    if (conversation.message_count === 0) {
+      await handleDeleteConversation(conversation, false);
+      return;
+    }
+
+    setDeleteConversationDialog({ conversation });
+  }
+
+  // Usuwa rozmowę i przekazuje backendowi decyzję użytkownika dotyczącą powiązanej pamięci.
+  async function handleDeleteConversation(
+    conversation: ConversationSummary,
+    deleteLinkedMemory: boolean,
+  ) {
+    try {
+      await deleteConversation(conversation.id, deleteLinkedMemory);
+
+      setConversations((currentConversations) =>
+        currentConversations.filter((item) => item.id !== conversation.id),
+      );
+      setArchivedConversations((currentConversations) =>
+        currentConversations.filter((item) => item.id !== conversation.id),
+      );
+      if (activeConversationId === conversation.id) {
+        setActiveConversationId(null);
+        setMessages([]);
+      }
+      setDeleteConversationDialog(null);
+      setChatError(null);
+      await refreshConversationLists();
+    } catch (deleteError) {
+      setChatError(getErrorMessage(deleteError));
+    }
   }
 
   function handleClearPrompt() {
@@ -1209,7 +1435,7 @@ export function App() {
     event.preventDefault();
 
     if (!memoryContent.trim()) {
-      setMemoryError('Wpis pamieci nie moze byc pusty.');
+      setMemoryError('Wpis pamięci nie może być pusty.');
       return;
     }
 
@@ -1224,7 +1450,7 @@ export function App() {
 
       setMemoryRecords((records) => upsertMemoryRecord(records, savedRecord));
       resetMemoryForm();
-      setMemoryNotice(editingMemoryId ? 'Zaktualizowalem wpis pamieci.' : 'Dodano wpis pamieci.');
+      setMemoryNotice(editingMemoryId ? 'Zaktualizowałem wpis pamięci.' : 'Dodano wpis pamięci.');
     } catch (saveError) {
       setMemoryError(getErrorMessage(saveError));
     } finally {
@@ -1245,7 +1471,7 @@ export function App() {
         resetMemoryForm();
       }
 
-      setMemoryNotice('Usunieto wpis pamieci.');
+      setMemoryNotice('Usunięto wpis pamięci.');
     } catch (deleteError) {
       setMemoryError(getErrorMessage(deleteError));
     } finally {
@@ -1317,7 +1543,7 @@ export function App() {
     if (!suggestion.draftContent.trim()) {
       setChatMemorySuggestions((currentSuggestions) =>
         updateChatMemorySuggestion(currentSuggestions, message.id, suggestionId, {
-          error: 'Wpis pamieci nie moze byc pusty.',
+          error: 'Wpis pamięci nie może być pusty.',
         }),
       );
       return;
@@ -1349,7 +1575,7 @@ export function App() {
           error: null,
         }),
       );
-      setMemoryNotice('Dodano wpis pamieci z rozmowy.');
+      setMemoryNotice('Dodano wpis pamięci z rozmowy.');
     } catch (saveError) {
       setChatMemorySuggestions((currentSuggestions) =>
         updateChatMemorySuggestion(currentSuggestions, message.id, suggestionId, {
@@ -1373,10 +1599,13 @@ export function App() {
           copy={copy}
           activeWorkspaceView={activeWorkspaceView}
           conversations={conversations}
+          archivedConversations={archivedConversations}
           activeConversationId={activeConversationId}
+          isArchiveViewOpen={isArchiveViewOpen}
           isAccountMenuOpen={isAccountMenuOpen}
           accountMenuRef={accountMenuRef}
           onBrandClick={() => {
+            setIsArchiveViewOpen(false);
             setActiveWorkspaceView('chat');
             setActiveConversationId(null);
             setMessages([]);
@@ -1384,9 +1613,136 @@ export function App() {
           onNewConversation={handleNewConversation}
           onOpenPlugins={() => setIsPluginMenuOpen(true)}
           onWorkspaceViewChange={setActiveWorkspaceView}
-          onConversationSelect={setActiveConversationId}
+          onArchiveViewOpen={() => setIsArchiveViewOpen(true)}
+          onArchiveViewClose={() => setIsArchiveViewOpen(false)}
+          onConversationSelect={(conversationId) => {
+            setActiveConversationId(conversationId);
+            setActiveWorkspaceView('chat');
+          }}
+          onConversationContextMenu={handleConversationContextMenu}
           onAccountToggle={() => setIsAccountMenuOpen((current) => !current)}
         />
+
+        {conversationMenu && (
+          <div
+            className="conversationContextMenu"
+            style={{ left: conversationMenu.x, top: conversationMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {conversationMenu.conversation.status === 'archived' ? (
+              <button
+                type="button"
+                onClick={() => void handleRestoreConversation(conversationMenu.conversation)}
+              >
+                {copy.restore}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleRequestArchiveConversation(conversationMenu.conversation)}
+              >
+                {copy.archive}
+              </button>
+            )}
+            <button
+              className="conversationContextDanger"
+              type="button"
+              onClick={() => void handleRequestDeleteConversation(conversationMenu.conversation)}
+            >
+              {copy.delete}
+            </button>
+          </div>
+        )}
+
+        {archiveConversationDialog && (
+          <div className="conversationDialogOverlay" role="dialog" aria-modal="true">
+            <section className="conversationDialog">
+              <button
+                className="conversationDialogBack"
+                type="button"
+                aria-label={copy.cancelArchive}
+                onClick={() => setArchiveConversationDialog(null)}
+              >
+                X
+              </button>
+              <div className="conversationDialogHeader">
+                <span className="conversationDialogKicker">{copy.archive}</span>
+                <h2>{copy.archiveChatPrompt}</h2>
+                <p>{copy.archiveChatBody}</p>
+              </div>
+              <label className="conversationDialogCheck">
+                <input
+                  type="checkbox"
+                  checked={archiveConversationDialog.skipFuturePrompts}
+                  onChange={(event) =>
+                    setArchiveConversationDialog((currentDialog) =>
+                      currentDialog
+                        ? {
+                            ...currentDialog,
+                            skipFuturePrompts: event.target.checked,
+                          }
+                        : currentDialog,
+                    )
+                  }
+                />
+                <span>{copy.doNotAskAgain}</span>
+              </label>
+              <div className="conversationDialogActions">
+                <button
+                  className="conversationDialogPrimary"
+                  type="button"
+                  onClick={() =>
+                    void handleArchiveConversation(
+                      archiveConversationDialog.conversation,
+                      archiveConversationDialog.skipFuturePrompts,
+                    )
+                  }
+                >
+                  {copy.confirmArchive}
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {deleteConversationDialog && (
+          <div className="conversationDialogOverlay" role="dialog" aria-modal="true">
+            <section className="conversationDialog conversationDialogDanger">
+              <button
+                className="conversationDialogBack"
+                type="button"
+                aria-label={copy.cancelDelete}
+                onClick={() => setDeleteConversationDialog(null)}
+              >
+                X
+              </button>
+              <div className="conversationDialogHeader">
+                <span className="conversationDialogKicker">{copy.delete}</span>
+                <h2>{copy.deleteChatMemoryPrompt}</h2>
+              </div>
+              <div className="conversationDialogActions">
+                <button
+                  className="conversationDialogDangerButton"
+                  type="button"
+                  onClick={() =>
+                    void handleDeleteConversation(deleteConversationDialog.conversation, true)
+                  }
+                >
+                  {copy.deleteWithMemory}
+                </button>
+                <button
+                  className="conversationDialogSecondary"
+                  type="button"
+                  onClick={() =>
+                    void handleDeleteConversation(deleteConversationDialog.conversation, false)
+                  }
+                >
+                  {copy.deleteKeepMemory}
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
 
         {activeWorkspaceView === 'chat' ? (
           <ChatSection
@@ -1567,6 +1923,7 @@ export function App() {
           </div>
 
           {chatError && <p className="voiceError">{chatError}</p>}
+          {conversationNotice && <p className="conversationNotice">{conversationNotice}</p>}
 
           <ChatInput
             copy={copy}
@@ -1601,7 +1958,7 @@ export function App() {
           />
             <audio ref={realtimeRemoteAudioRef} autoPlay />
           {voiceCallStatus !== 'idle' && (
-            <div className="voiceCallOverlay" role="dialog" aria-modal="true" aria-label="Aktywne polaczenie glosowe">
+            <div className="voiceCallOverlay" role="dialog" aria-modal="true" aria-label="Aktywne połączenie głosowe">
               <div className="voiceCallDock">
                 <section className="voiceModelWindow" aria-label="Model glosowy">
                   <div className="voiceOrb voiceOrbActive" aria-hidden="true">
@@ -1624,11 +1981,11 @@ export function App() {
                     onClick={handleVoiceCallToggle}
                      aria-pressed="true"
                    >
-                     Rozlacz
+                     Rozłącz
                    </button>
                   ) : (
                     <div className="voiceSavePrompt">
-                      <p>Czy zapisac historie chatu?</p>
+                      <p>Czy zapisać historię chatu?</p>
                       <div className="voiceSaveActions">
                         <button
                           className="voiceSaveButton voiceSaveButtonNo"
@@ -1966,7 +2323,7 @@ function updateChatMemorySuggestion(
 }
 
 function getMemoryCategoryLabel(category: MemoryCategory) {
-  return memoryCategories.find((item) => item.value === category)?.label ?? 'Pamiec';
+  return memoryCategories.find((item) => item.value === category)?.label ?? 'Pamięć';
 }
 
 function getMemorySourceLabel(record: MemoryRecord) {
