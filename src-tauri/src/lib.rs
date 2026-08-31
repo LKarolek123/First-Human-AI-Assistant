@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{TimeZone, Utc};
+use futures_util::StreamExt;
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -491,12 +492,26 @@ struct OpenAIResponsesRequest<'a> {
     model: &'a str,
     instructions: &'a str,
     input: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
 }
 
 #[derive(Deserialize)]
 struct OpenAIResponsesResponse {
     output: Option<Vec<OpenAIOutputItem>>,
     output_text: Option<String>,
+    error: Option<OpenAIError>,
+}
+
+#[derive(Deserialize)]
+struct OpenAIStreamEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    delta: Option<String>,
+    text: Option<String>,
+    message: Option<String>,
+    error: Option<OpenAIError>,
+    response: Option<OpenAIResponsesResponse>,
 }
 
 #[derive(Deserialize)]
@@ -2925,15 +2940,8 @@ async fn run_codex_api_agent(
                                      result: String| {
         push_developer_agent_step(agent_steps, step, action, reason, result);
 
-        if let (Some(app), Some(agent_step)) = (app, agent_steps.last()) {
-            let event = DeveloperAgentStepEvent {
-                run_id: developer_run_id.clone(),
-                step: agent_step.clone(),
-            };
-
-            if let Err(error) = app.emit("developer-agent-step", event) {
-                log::warn!("Nie udalo sie wyslac live logu agenta: {error}");
-            }
+        if let Some(agent_step) = agent_steps.last() {
+            emit_developer_agent_step(app, &developer_run_id, agent_step.clone());
         }
     };
     push_developer_agent_step(
@@ -2954,7 +2962,33 @@ async fn run_codex_api_agent(
             &read_files,
             &transcript,
         );
-        let response_text = request_openai_code_text(CODE_AGENT_INSTRUCTIONS, &agent_input).await?;
+        let mut streamed_preview = String::new();
+        let mut streamed_since_event = 0usize;
+        let mut stream_event_index = 0i64;
+        let response_text =
+            request_openai_code_text_streamed(CODE_AGENT_INSTRUCTIONS, &agent_input, |delta| {
+                streamed_preview.push_str(delta);
+                streamed_since_event += delta.chars().count();
+
+                if stream_event_index == 0 || streamed_since_event >= 240 || delta.contains('\n') {
+                    stream_event_index += 1;
+                    streamed_since_event = 0;
+                    emit_developer_agent_step(
+                        app,
+                        &developer_run_id,
+                        DeveloperAgentStep {
+                            step: step * 1000 + stream_event_index,
+                            action: "model_stream".to_string(),
+                            reason: None,
+                            result: format!(
+                                "Model generuje odpowiedz akcji:\n{}",
+                                truncate(&streamed_preview, 1200)
+                            ),
+                        },
+                    );
+                }
+            })
+            .await?;
         let action = parse_developer_agent_action(&response_text)?;
         let action_name = action.action.clone();
         let action_reason = action.reason.clone().map(|reason| truncate(&reason, 500));
@@ -3249,6 +3283,22 @@ fn push_developer_agent_step(
         reason,
         result: truncate(&result, 1600),
     });
+}
+
+/// Wysyła pojedynczy krok pracy agenta do frontendu bez wymuszania zapisu w wyniku końcowym.
+fn emit_developer_agent_step(app: Option<&AppHandle>, run_id: &str, step: DeveloperAgentStep) {
+    let Some(app) = app else {
+        return;
+    };
+
+    let event = DeveloperAgentStepEvent {
+        run_id: run_id.to_string(),
+        step,
+    };
+
+    if let Err(error) = app.emit("developer-agent-step", event) {
+        log::warn!("Nie udalo sie wyslac live logu agenta: {error}");
+    }
 }
 
 /// Ładuje historię aktualnego developer-chatu i preferencje pamięci oznaczone słowem developer.
@@ -4977,6 +5027,23 @@ async fn request_openai_code_text(instructions: &str, input: &str) -> Result<Str
     request_openai_text_with_model(&api_key, &model, instructions, input).await
 }
 
+/// Wysyła zadania kodowe do Responses API w trybie stream i przekazuje jawne fragmenty tekstu do UI.
+async fn request_openai_code_text_streamed<F>(
+    instructions: &str,
+    input: &str,
+    on_delta: F,
+) -> Result<String, String>
+where
+    F: FnMut(&str),
+{
+    let api_key = load_openai_api_key()?;
+    let model = std::env::var("OPENAI_CODE_MODEL")
+        .or_else(|_| std::env::var("OPENAI_MODEL"))
+        .unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+
+    request_openai_text_with_model_streamed(&api_key, &model, instructions, input, on_delta).await
+}
+
 /// Wykonuje wspólne żądanie do Responses API dla zwykłego chatu i agenta kodującego.
 async fn request_openai_text_with_model(
     api_key: &str,
@@ -4988,6 +5055,7 @@ async fn request_openai_text_with_model(
         model,
         instructions,
         input,
+        stream: None,
     };
 
     let client = reqwest::Client::builder()
@@ -5025,6 +5093,156 @@ async fn request_openai_text_with_model(
 
     extract_response_text(payload)
         .ok_or_else(|| "Model nie zwrocil tekstowej odpowiedzi.".to_string())
+}
+
+/// Czyta strumień SSE z Responses API i składa pełną tekstową odpowiedź modelu.
+async fn request_openai_text_with_model_streamed<F>(
+    api_key: &str,
+    model: &str,
+    instructions: &str,
+    input: &str,
+    mut on_delta: F,
+) -> Result<String, String>
+where
+    F: FnMut(&str),
+{
+    let request = OpenAIResponsesRequest {
+        model,
+        instructions,
+        input,
+        stream: Some(true),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(OPENAI_REQUEST_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|error| format!("Nie udalo sie przygotowac klienta OpenAI API. {error}"))?;
+
+    let response = client
+        .post(OPENAI_API_URL)
+        .bearer_auth(api_key)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| format_openai_request_error(&error))?;
+
+    let status = response.status();
+
+    if !status.is_success() {
+        let fallback = format!("OpenAI API zwrocilo blad {status}.");
+        let error_message = response
+            .json::<OpenAIErrorResponse>()
+            .await
+            .ok()
+            .and_then(|payload| payload.error)
+            .and_then(|error| error.message)
+            .unwrap_or(fallback);
+
+        return Err(error_message);
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut output_text = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format_openai_request_error(&error))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some((boundary, separator_length)) = sse_event_boundary(&buffer) {
+            let event_block = buffer[..boundary].to_string();
+            buffer = buffer[boundary + separator_length..].to_string();
+
+            let Some(data) = sse_data_payload(&event_block) else {
+                continue;
+            };
+
+            if data == "[DONE]" {
+                continue;
+            }
+
+            let event = serde_json::from_str::<OpenAIStreamEvent>(&data).map_err(|error| {
+                format!("Nie udalo sie odczytac fragmentu streamingu OpenAI API. {error}")
+            })?;
+
+            match event.event_type.as_str() {
+                "response.output_text.delta" => {
+                    if let Some(delta) = event.delta {
+                        output_text.push_str(&delta);
+                        on_delta(&delta);
+                    }
+                }
+                "response.output_text.done" => {
+                    if let Some(text) = event.text {
+                        let text = text.trim().to_string();
+
+                        if !text.is_empty() {
+                            output_text = text;
+                        }
+                    }
+                }
+                "response.completed" => {
+                    if output_text.trim().is_empty() {
+                        if let Some(response) = event.response {
+                            if let Some(text) = extract_response_text(response) {
+                                output_text = text;
+                            }
+                        }
+                    }
+                }
+                "response.failed" => {
+                    let message = event
+                        .response
+                        .and_then(|response| response.error)
+                        .and_then(|error| error.message)
+                        .or(event.message)
+                        .unwrap_or_else(|| {
+                            "OpenAI API przerwalo generowanie odpowiedzi.".to_string()
+                        });
+
+                    return Err(message);
+                }
+                "error" => {
+                    let message = event
+                        .error
+                        .and_then(|error| error.message)
+                        .or(event.message)
+                        .unwrap_or_else(|| "OpenAI API zwrocilo blad streamingu.".to_string());
+
+                    return Err(message);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let output_text = output_text.trim().to_string();
+
+    if output_text.is_empty() {
+        Err("Model nie zwrocil tekstowej odpowiedzi.".to_string())
+    } else {
+        Ok(output_text)
+    }
+}
+
+/// Znajduje granicę pojedynczego eventu SSE niezależnie od użycia LF albo CRLF.
+fn sse_event_boundary(buffer: &str) -> Option<(usize, usize)> {
+    buffer
+        .find("\r\n\r\n")
+        .map(|index| (index, 4))
+        .or_else(|| buffer.find("\n\n").map(|index| (index, 2)))
+}
+
+/// Składa wszystkie linie `data:` jednego eventu SSE w pojedynczy payload JSON.
+fn sse_data_payload(event_block: &str) -> Option<String> {
+    let data = event_block
+        .lines()
+        .filter_map(|line| line.trim_end_matches('\r').strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    (!data.is_empty()).then_some(data)
 }
 
 /// Zamienia techniczny błąd reqwest na komunikat wskazujący, że awaria dotyczy połączenia z OpenAI.

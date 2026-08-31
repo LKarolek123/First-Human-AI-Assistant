@@ -157,7 +157,9 @@ const uiCopy = {
     emptyChatTitle: 'Nowa rozmowa jest gotowa.',
     emptyChatBody: 'Wyślij wiadomość, aby rozpocząć.',
     thinking: 'myślę...',
-    developerThinking: 'Agent czyta kod i przygotowuje zmianę. Log pojawi się po zakończeniu operacji.',
+    thinkingFor: 'myślę od',
+    developerThinking: 'Agent czyta kod i przygotowuje zmianę. Kroki pracy będą pojawiać się poniżej.',
+    developerStartStep: 'Rozpoczęto pracę agenta kodującego.',
     composerFooter: 'Dyktafon zamieni głos na tekst. Calling uruchamia rozmowę realtime.',
     activeVoiceCall: 'Aktywne połączenie głosowe',
     realtimeVoice: 'Głos realtime',
@@ -176,6 +178,11 @@ const uiCopy = {
     calendar: 'Kalendarz',
     messagePlaceholder: 'Napisz wiadomość...',
     send: 'Wyślij',
+    copyMessage: 'Kopiuj wiadomość',
+    copyMessageShort: 'Kopiuj',
+    retryMessage: 'Wyślij tę wiadomość jeszcze raz',
+    retryMessageShort: 'Ponów',
+    copiedMessage: 'Skopiowano wiadomość.',
     messageTools: 'Narzędzia wiadomości',
     stopDictation: 'Zatrzymaj dyktafon',
     dictation: 'Dyktafon',
@@ -327,7 +334,9 @@ const uiCopy = {
     emptyChatTitle: 'New conversation is ready.',
     emptyChatBody: 'Send a message to start.',
     thinking: 'thinking...',
-    developerThinking: 'Agent is reading code and preparing a change. The log will appear after the operation finishes.',
+    thinkingFor: 'thinking for',
+    developerThinking: 'Agent is reading code and preparing a change. Work steps will appear below.',
+    developerStartStep: 'Started the coding agent run.',
     composerFooter: 'Dictation turns voice into text. Calling starts a realtime conversation.',
     activeVoiceCall: 'Active voice connection',
     realtimeVoice: 'Realtime voice',
@@ -346,6 +355,11 @@ const uiCopy = {
     calendar: 'Calendar',
     messagePlaceholder: 'Send a message...',
     send: 'Send',
+    copyMessage: 'Copy message',
+    copyMessageShort: 'Copy',
+    retryMessage: 'Send this message again',
+    retryMessageShort: 'Retry',
+    copiedMessage: 'Message copied.',
     messageTools: 'Message tools',
     stopDictation: 'Stop dictation',
     dictation: 'Dictation',
@@ -539,6 +553,8 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
   const [chatState, setChatState] = useState<'idle' | 'loading'>('idle');
+  const [responseWaitStartedAt, setResponseWaitStartedAt] = useState<number | null>(null);
+  const [responseWaitSeconds, setResponseWaitSeconds] = useState(0);
   const [pluginConnections, setPluginConnections] = useState<PluginConnection[]>([]);
   const [pluginError, setPluginError] = useState<string | null>(null);
   const [pluginState, setPluginState] = useState<'idle' | 'savingConfig' | 'connecting' | 'loadingEvents' | 'loadingMail'>('idle');
@@ -588,6 +604,7 @@ export function App() {
   const [developerProposal, setDeveloperProposal] = useState<CodePatchProposal | null>(null);
   const [developerApplyResult, setDeveloperApplyResult] = useState<CodePatchApplyResult | null>(null);
   const [liveDeveloperAgentSteps, setLiveDeveloperAgentSteps] = useState<DeveloperAgentStep[]>([]);
+  const [isDeveloperChatRunning, setIsDeveloperChatRunning] = useState(false);
   const [developerCommandResult, setDeveloperCommandResult] =
     useState<DeveloperCommandResult | null>(null);
   const [developerVerdict, setDeveloperVerdict] = useState<'approved' | 'rejected' | null>(null);
@@ -865,9 +882,29 @@ export function App() {
     };
   }, [activeConversationId]);
 
+  useEffect(() => {
+    if (chatState !== 'loading' || responseWaitStartedAt === null) {
+      setResponseWaitSeconds(0);
+      return;
+    }
+
+    const startedAt = responseWaitStartedAt;
+
+    function updateElapsedTime() {
+      setResponseWaitSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    }
+
+    updateElapsedTime();
+    const intervalId = window.setInterval(updateElapsedTime, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [chatState, responseWaitStartedAt]);
+
   const submitChatInput = useCallback(async (input: string, restoreOnError = true) => {
     setTypedPrompt('');
     setChatError(null);
+    setResponseWaitStartedAt(Date.now());
+    setResponseWaitSeconds(0);
     setChatState('loading');
   
    
@@ -888,12 +925,21 @@ export function App() {
 
 
     try {
-      const isDeveloperConversation = activeConversation?.kind === 'developer';
+      const isDeveloperConversation =
+        activeConversation?.kind === 'developer' || activeWorkspaceView === 'developer';
       const developerRunId = isDeveloperConversation ? crypto.randomUUID() : null;
 
       if (developerRunId) {
         activeDeveloperRunIdRef.current = developerRunId;
-        setLiveDeveloperAgentSteps([]);
+        setIsDeveloperChatRunning(true);
+        setLiveDeveloperAgentSteps([
+          {
+            step: 0,
+            action: 'start',
+            reason: null,
+            result: copy.developerStartStep,
+          },
+        ]);
       }
 
       const response = isDeveloperConversation
@@ -967,12 +1013,16 @@ export function App() {
       return false;
     } finally {
       activeDeveloperRunIdRef.current = null;
+      setIsDeveloperChatRunning(false);
+      setResponseWaitStartedAt(null);
       setChatState('idle');
     }
   }, [
     activeConversation?.kind,
     activeConversationId,
+    activeWorkspaceView,
     copy.conversationRestoredNotice,
+    copy.developerStartStep,
     developerAskBeforeChange,
     developerQuestionPreference,
   ]);
@@ -1005,6 +1055,27 @@ export function App() {
     }
 
     await submitChatInput(promptText);
+  }
+
+  async function handleCopyChatMessage(content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setChatError(null);
+      setConversationNotice(copy.copiedMessage);
+      window.setTimeout(() => setConversationNotice(null), 1600);
+    } catch (copyError) {
+      setChatError(getErrorMessage(copyError));
+    }
+  }
+
+  async function handleRetryChatMessage(content: string) {
+    const retryInput = content.trim();
+
+    if (!retryInput || chatState === 'loading') {
+      return;
+    }
+
+    await submitChatInput(retryInput);
   }
 
   function handleNewConversation() {
@@ -1832,7 +1903,6 @@ export function App() {
     setDeveloperError(null);
     setDeveloperProposal(null);
     setDeveloperApplyResult(null);
-    setLiveDeveloperAgentSteps([]);
     setDeveloperCommandResult(null);
     setDeveloperVerdict(null);
     setDeveloperState('applying');
@@ -1840,6 +1910,14 @@ export function App() {
     try {
       const developerRunId = crypto.randomUUID();
       activeDeveloperRunIdRef.current = developerRunId;
+      setLiveDeveloperAgentSteps([
+        {
+          step: 0,
+          action: 'start',
+          reason: null,
+          result: copy.developerStartStep,
+        },
+      ]);
       const result = await applyCodePatch(task, {
         askBeforeChange: developerAskBeforeChange,
         questionPreference: developerQuestionPreference,
@@ -2130,6 +2208,25 @@ export function App() {
                       </time>
                     </div>
                     <p>{message.content}</p>
+                    <div className="messageBubbleActions" aria-label={copy.messageTools}>
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyChatMessage(message.content)}
+                        title={copy.copyMessage}
+                      >
+                        {copy.copyMessageShort}
+                      </button>
+                      {message.role === 'user' && (
+                        <button
+                          type="button"
+                          onClick={() => void handleRetryChatMessage(message.content)}
+                          disabled={chatState === 'loading'}
+                          title={copy.retryMessage}
+                        >
+                          {copy.retryMessageShort}
+                        </button>
+                      )}
+                    </div>
                   </article>
 
                   {message.role === 'assistant' &&
@@ -2252,11 +2349,16 @@ export function App() {
               <article className="messageBubble messageBubbleBusy">
                 <strong>Assistant</strong>
                 <p>
-                  {activeConversation?.kind === 'developer'
+                  {isDeveloperChatRunning
                     ? copy.developerThinking
-                    : copy.thinking}
+                    : `${copy.thinkingFor} ${responseWaitSeconds} s...`}
                 </p>
-                {activeConversation?.kind === 'developer' &&
+                {isDeveloperChatRunning && (
+                  <p className="messageWaitTime">
+                    {copy.thinkingFor} {responseWaitSeconds} s...
+                  </p>
+                )}
+                {isDeveloperChatRunning &&
                   liveDeveloperAgentSteps.length > 0 && (
                     <details className="developerAgentLog" open>
                       <summary>{copy.agentWorkLog}</summary>

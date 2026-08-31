@@ -1873,6 +1873,7 @@ textarea {
 
 .messageBubble,
 .emptyChat {
+  position: relative;
   max-width: 86%;
   padding: 10px 12px;
   border: 1px solid #343437;
@@ -1899,6 +1900,13 @@ textarea {
   color: #8e8ea0;
   font-size: 0.76rem;
   font-weight: 650;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.messageBubble:hover .messageBubbleMeta time,
+.messageBubble:focus-within .messageBubbleMeta time {
+  opacity: 1;
 }
 
 .messageBubbleUser {
@@ -1906,9 +1914,59 @@ textarea {
   background: #1f3a2f;
 }
 
+.messageBubbleActions {
+  position: absolute;
+  right: 8px;
+  bottom: -17px;
+  z-index: 2;
+  display: inline-flex;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+  transform: translateY(-3px);
+}
+
+.messageBubble:hover .messageBubbleActions,
+.messageBubble:focus-within .messageBubbleActions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.messageBubbleActions button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid #464852;
+  border-radius: 999px;
+  background: #2b2c31;
+  color: #f1f1f4;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.messageBubbleActions button:hover {
+  border-color: #5b5d66;
+  background: #383941;
+}
+
+.messageBubbleActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .messageBubble p,
 .emptyChat p {
   color: #ececf1;
+}
+
+.messageWaitTime {
+  margin-top: 6px;
+  color: #a6a6b3;
+  font-size: 0.86rem;
 }
 
 .promptForm {
