@@ -1,7 +1,7 @@
 import type { RefObject } from 'react';
 import type { ConversationSummary } from './ai/openaiFeedback';
 
-type WorkspaceView = 'chat' | 'memory';
+type WorkspaceView = 'chat' | 'memory' | 'developer';
 
 type SidePanelProps = {
   copy: Record<string, string>;
@@ -14,6 +14,7 @@ type SidePanelProps = {
   accountMenuRef: RefObject<HTMLDivElement | null>;
   onBrandClick: () => void;
   onNewConversation: () => void;
+  onDeveloperConversation: () => void;
   onOpenPlugins: () => void;
   onWorkspaceViewChange: (view: WorkspaceView) => void;
   onArchiveViewOpen: () => void;
@@ -37,6 +38,7 @@ export function SidePanel({
   accountMenuRef,
   onBrandClick,
   onNewConversation,
+  onDeveloperConversation,
   onOpenPlugins,
   onWorkspaceViewChange,
   onArchiveViewOpen,
@@ -78,6 +80,24 @@ export function SidePanel({
         >
           {copy.memory}
         </button>
+        <button
+          className={
+            activeWorkspaceView === 'chat' &&
+            visibleConversations.some(
+              (conversation) =>
+                conversation.id === activeConversationId && conversation.kind === 'developer',
+            )
+              ? 'sidebarNavButton sidebarNavButtonActive'
+              : 'sidebarNavButton'
+          }
+          type="button"
+          onClick={() => {
+            onArchiveViewClose();
+            onDeveloperConversation();
+          }}
+        >
+          {copy.developer}
+        </button>
       </div>
 
       {activeWorkspaceView === 'memory' && !isArchiveViewOpen && (
@@ -111,7 +131,12 @@ export function SidePanel({
                   });
                 }}
               >
-                <span>{conversation.title}</span>
+                <span>
+                  {conversation.title}
+                  {conversation.kind === 'developer' && (
+                    <em className="conversationKindBadge">{copy.developerChatBadge}</em>
+                  )}
+                </span>
                 <small>{conversation.last_message ?? 'Brak wiadomości'}</small>
               </button>
             ))}

@@ -39,6 +39,11 @@ type ChatInputProps = {
   onVoiceModelMenuToggle: () => void;
   onVoiceModelMenuClose: () => void;
   onVoiceButton: () => void;
+  cameraError: string | null;
+  cameraRecordingState: 'idle' | 'starting' | 'recording' | 'ready' | 'error';
+  cameraRecordingUrl: string | null;
+  isCameraSupported: boolean;
+  onCameraButton: () => void;
   voiceCallStatus: string;
   onVoiceCallToggle: () => void;
   footerText: string;
@@ -71,6 +76,11 @@ export function ChatInput({
   onVoiceModelMenuToggle,
   onVoiceModelMenuClose,
   onVoiceButton,
+  cameraError,
+  cameraRecordingState,
+  cameraRecordingUrl,
+  isCameraSupported,
+  onCameraButton,
   voiceCallStatus,
   onVoiceCallToggle,
   footerText,
@@ -158,6 +168,29 @@ export function ChatInput({
           </div>
 
           <button
+            className={
+              cameraRecordingState === 'recording' || cameraRecordingState === 'starting'
+                ? 'toolIconButton toolIconButtonActive'
+                : 'toolIconButton'
+            }
+            type="button"
+            onClick={onCameraButton}
+            disabled={!isCameraSupported || cameraRecordingState === 'starting'}
+            aria-pressed={cameraRecordingState === 'recording'}
+            title={
+              cameraRecordingState === 'recording' || cameraRecordingState === 'starting'
+                ? copy.stopCamera
+                : copy.camera
+            }
+          >
+            <svg className="cameraSvgIcon" aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M4 7h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z" />
+              <path d="m17 10 5-3v10l-5-3" />
+              <path d="M7 7l1.2-2h3.6L13 7" />
+            </svg>
+          </button>
+
+          <button
             className={voiceCallStatus !== 'idle' ? 'toolPill toolPillActive' : 'toolPill'}
             type="button"
             onClick={onVoiceCallToggle}
@@ -185,6 +218,34 @@ export function ChatInput({
         )}
 
         {error && <p className="voiceError">{error}</p>}
+        {!isCameraSupported && <p className="voiceNotice">{copy.cameraUnsupported}</p>}
+        {cameraError && <p className="voiceError">{cameraError}</p>}
+
+        {(cameraRecordingState === 'recording' ||
+          cameraRecordingState === 'starting' ||
+          cameraRecordingUrl) && (
+          <div className="cameraRecordingPanel" aria-live="polite">
+            <div>
+              <strong>
+                {cameraRecordingState === 'recording' || cameraRecordingState === 'starting'
+                  ? copy.cameraRecording
+                  : copy.cameraReady}
+              </strong>
+              <span>
+                {cameraRecordingState === 'recording' || cameraRecordingState === 'starting'
+                  ? copy.stopCamera
+                  : copy.cameraDownload}
+              </span>
+            </div>
+            {cameraRecordingUrl && (
+              <div className="cameraRecordingActions">
+                <a href={cameraRecordingUrl} download="xo-camera-recording.webm">
+                  {copy.cameraDownload}
+                </a>
+              </div>
+            )}
+          </div>
+        )}
 
         {(transcript || isBusy) && (
           <div className={isBusy ? 'transcriptBox transcriptBoxBusy' : 'transcriptBox'} aria-live="polite">

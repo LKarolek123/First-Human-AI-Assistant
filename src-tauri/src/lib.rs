@@ -7,16 +7,17 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{Manager, State};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
 const OPENAI_REALTIME_CALLS_URL: &str = "https://api.openai.com/v1/realtime/calls";
 const DEFAULT_MODEL: &str = "gpt-4.1-mini";
+const OPENAI_REQUEST_TIMEOUT_SECONDS: u64 = 90;
 
 const CHAT_INSTRUCTIONS: &str = "Jestes XO, spokojnym asystentem Human First. Odpowiadaj po polsku, konkretnie i zyczliwie. 
 Odpowiadaj na pytania w jezyku polskim, chyba ze uzytkownik rozpocznie z toba konwersacje w jezyku angielskim - wtedy odpowiadaj po angielsku. 
@@ -51,7 +52,6 @@ const GOOGLE_CALENDAR_KEYRING_USER: &str = "google-calendar";
 const GMAIL_KEYRING_USER: &str = "google-gmail";
 const GOOGLE_OAUTH_CLIENT_SECRET_KEYRING_USER: &str = "google-oauth-client-secret";
 
-
 const VOICE_MEMORY_SUGGESTION_INSTRUCTIONS: &str = "Analizujesz cala zapisana rozmowe glosowa uzytkownika z XO 
 i istniejace jawne wpisy pamieci. Nie uzywaj ani nie zakladaj zadnej innej historii. 
 Zaproponuj maksymalnie 3 stabilne i przydatne wpisy pamieci na przyszle rozmowy: 
@@ -64,6 +64,35 @@ Nie dodawaj pola reason. Dozwolone category: user_fact, preference, project, dec
 ";
 
 const TOOL_PLANNER_INSTRUCTIONS: &str = include_str!("prompts/tool_planner.md");
+const CODE_PATCH_PROPOSAL_INSTRUCTIONS: &str = "Jestes lokalnym coding agentem XO w trybie proposal-only. \
+Czytasz tylko dostarczone wycinki kodu i przygotowujesz propozycje zmian. \
+Nie twierdz, ze zapisales pliki, uruchomiles testy albo zastosowales patch. \
+Nie pros o sekrety i nie sugeruj logowania tokenow, hasel ani kluczy API. \
+Jesli brakuje kontekstu, napisz jakie pliki trzeba sprawdzic. \
+Odpowiedz po polsku. Zwroc: krotki plan, ryzyka, proponowany unified diff w bloku ```diff oraz testy do uruchomienia.";
+const CODE_PATCH_REPAIR_INSTRUCTIONS: &str = "Jestes lokalnym coding agentem XO naprawiajacym uszkodzony unified diff. \
+Dostajesz zadanie uzytkownika, aktualny kod, patch odrzucony przez git apply oraz blad Gita. \
+Nie zmieniaj zakresu zadania i nie dodawaj nowych decyzji. \
+Zwroc wylacznie poprawny unified diff w formacie git, zaczynajacy sie od linii diff --git a/sciezka b/sciezka. \
+Nie opakowuj odpowiedzi w markdown i nie dodawaj komentarza poza diffem. \
+Patch musi dotyczyc tylko plikow widocznych w dostarczonym kontekście kodu. \
+Nie modyfikuj sekretow, plikow .env, .git, build outputow ani zaleznosci.";
+const CODE_AGENT_INSTRUCTIONS: &str = "Jestes lokalnym agentem kodujacym XO sterowanym przez bezpieczne akcje JSON. \
+Nie pisz zwyklej odpowiedzi. W kazdym kroku zwroc wylacznie poprawny JSON z jedna akcja. \
+Dostepne akcje: \
+{\"action\":\"read_file\",\"path\":\"src/App.tsx\",\"reason\":\"dlaczego ten plik\"}, \
+{\"action\":\"apply_patch\",\"patch\":\"unified diff\",\"reason\":\"co zmienia patch\"}, \
+{\"action\":\"run_build\",\"reason\":\"dlaczego trzeba uruchomic build\"}, \
+{\"action\":\"clarify\",\"message\":\"pytanie do uzytkownika\"}, \
+{\"action\":\"finish\",\"message\":\"podsumowanie dla uzytkownika\"}. \
+Czytaj pliki iteracyjnie i pros tylko o pliki z indeksu projektu. \
+Patch musi byc poprawnym unified diffem w formacie git i dotyczyc tylko przeczytanych plikow. \
+Uzywaj clarify tylko wtedy, gdy bez odpowiedzi uzytkownika nie da sie bezpiecznie okreslic zachowania funkcji, zakresu danych, skutkow ubocznych, prywatnosci albo operacji destrukcyjnej. \
+Nie pytaj o drobne decyzje implementacyjne ani UI, takie jak polozenie przycisku, wariant tekstu, nazwy zmiennych, prosty layout czy styl, jesli mozna zastosowac spojny wzorzec z istniejacej aplikacji. \
+Gdy zadanie jest jasne, wybierz najprostsze rozwiazanie zgodne z istniejacym kodem i kontynuuj bez clarify. \
+Jesli polityka pytania przed zmiana jest wlaczona, clarify nadal jest wyjatkiem dla naprawde koniecznych pytan funkcjonalnych. \
+Nie modyfikuj sekretow, plikow .env, .git, build outputow ani zaleznosci. \
+Nie uruchamiaj dowolnych komend; jedyna dozwolona akcja testowa to run_build.";
 
 struct AppState {
     db: Mutex<Connection>,
@@ -83,6 +112,7 @@ struct ConversationSummary {
     created_at: i64,
     updated_at: i64,
     status: String,
+    kind: String,
     message_count: i64,
     last_message: Option<String>,
 }
@@ -106,6 +136,49 @@ struct ChatResponse {
     restored_from_archive: bool,
 }
 
+#[derive(Serialize)]
+struct CodePatchProposal {
+    task: String,
+    proposal: String,
+    inspected_files: Vec<String>,
+    created_at: i64,
+}
+
+#[derive(Serialize)]
+struct CodePatchApplyResult {
+    task: String,
+    patch: String,
+    inspected_files: Vec<String>,
+    changed_files: Vec<String>,
+    agent_steps: Vec<DeveloperAgentStep>,
+    needs_clarification: bool,
+    clarification_question: Option<String>,
+    created_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+struct DeveloperAgentStep {
+    step: i64,
+    action: String,
+    reason: Option<String>,
+    result: String,
+}
+
+#[derive(Clone, Serialize)]
+struct DeveloperAgentStepEvent {
+    run_id: String,
+    step: DeveloperAgentStep,
+}
+
+#[derive(Serialize)]
+struct DeveloperCommandResult {
+    command: String,
+    success: bool,
+    stdout: String,
+    stderr: String,
+    created_at: i64,
+}
+
 #[derive(Deserialize)]
 struct VoiceCallHistoryLine {
     role: String,
@@ -117,7 +190,7 @@ struct VoiceCallHistoryResponse {
     conversation: ConversationSummary,
     messages: Vec<ChatMessage>,
     memory_suggestions: Vec<MemorySuggestion>,
-    memory_suggestion_analysis: MemorySuggestionAnalysis
+    memory_suggestion_analysis: MemorySuggestionAnalysis,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -139,19 +212,20 @@ struct RealtimeCallConfigRequest {
     conversation_mode: Option<String>,
     #[serde(rename = "userGoal")]
     user_goal: Option<String>,
-   
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct ToolPlan {
-  use_memory: bool,
-  check_email: bool,
-  check_calendar: bool,
-  modify_calendar: bool,
-  send_email: bool,
-  needs_clarification: bool,
-  clarification_question: Option<String>,
-  reason: Option<String>,
+    use_memory: bool,
+    #[serde(default)]
+    inspect_code: bool,
+    check_email: bool,
+    check_calendar: bool,
+    modify_calendar: bool,
+    send_email: bool,
+    needs_clarification: bool,
+    clarification_question: Option<String>,
+    reason: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -174,7 +248,6 @@ struct CreateRealtimeCallRequest {
     sdp_offer: String,
 }
 
-
 #[derive(Serialize)]
 struct CreateRealtimeCallResponse {
     #[serde(rename = "sdpAnswer")]
@@ -191,7 +264,6 @@ struct OpenAIRealtimeSessionPayload {
     audio: OpenAIRealtimeAudioConfig,
 }
 
-
 #[derive(Serialize)]
 struct OpenAIRealtimeAudioConfig {
     input: OpenAIRealtimeAudioInputConfig,
@@ -200,7 +272,7 @@ struct OpenAIRealtimeAudioConfig {
 
 #[derive(Serialize)]
 struct OpenAIRealtimeAudioOutputConfig {
-    voice: String,   
+    voice: String,
 }
 
 #[derive(Serialize)]
@@ -297,6 +369,27 @@ struct GmailMessageSummary {
     label_ids: Vec<String>,
 }
 
+#[derive(Default, Debug)]
+struct CodeFileContext {
+    path: String,
+    excerpt: String,
+}
+
+#[derive(Default)]
+struct DeveloperPatchContext {
+    conversation_history: Vec<ChatMessage>,
+    developer_preferences: Vec<MemoryRecord>,
+}
+
+#[derive(Deserialize)]
+struct DeveloperAgentAction {
+    action: String,
+    path: Option<String>,
+    patch: Option<String>,
+    message: Option<String>,
+    reason: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct GoogleStoredTokens {
     access_token: String,
@@ -389,6 +482,7 @@ struct ToolContext {
     gmail_messages: Option<Vec<GmailMessageSummary>>,
     memory_records: Option<Vec<MemoryRecord>>,
     conversation_memory: Option<Vec<String>>,
+    code_files: Option<Vec<CodeFileContext>>,
     notes: Vec<String>,
 }
 
@@ -440,7 +534,9 @@ fn list_conversations(state: State<'_, AppState>) -> Result<Vec<ConversationSumm
 }
 
 #[tauri::command]
-fn list_archived_conversations(state: State<'_, AppState>) -> Result<Vec<ConversationSummary>, String> {
+fn list_archived_conversations(
+    state: State<'_, AppState>,
+) -> Result<Vec<ConversationSummary>, String> {
     let db = state
         .db
         .lock()
@@ -461,7 +557,7 @@ fn create_conversation(
         .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
     cleanup_empty_conversations(&db)?;
     archive_stale_conversations(&db)?;
-    if let Some(empty_conversation) = load_empty_active_conversation(&db)? {
+    if let Some(empty_conversation) = load_empty_active_conversation(&db, "chat")? {
         return Ok(empty_conversation);
     }
 
@@ -470,10 +566,38 @@ fn create_conversation(
     let title = normalize_title(title.as_deref().unwrap_or("Nowa rozmowa"));
 
     db.execute(
-        "INSERT INTO conversations (id, title, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, 'active')",
+        "INSERT INTO conversations (id, title, created_at, updated_at, status, kind) VALUES (?1, ?2, ?3, ?4, 'active', 'chat')",
         params![id, title, now, now],
     )
     .map_err(|error| format!("Nie udalo sie utworzyc rozmowy. {error}"))?;
+
+    load_conversation(&db, &id)
+}
+
+/// Tworzy albo zwraca pusty aktywny developer-chat, aby praca nad kodem miala osobna historie.
+#[tauri::command]
+fn create_developer_conversation(
+    state: State<'_, AppState>,
+) -> Result<ConversationSummary, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+    cleanup_empty_conversations(&db)?;
+    archive_stale_conversations(&db)?;
+    if let Some(empty_conversation) = load_empty_active_conversation(&db, "developer")? {
+        return Ok(empty_conversation);
+    }
+
+    let now = unix_timestamp();
+    let id = create_id("devchat");
+    let title = normalize_title("Developer chat");
+
+    db.execute(
+        "INSERT INTO conversations (id, title, created_at, updated_at, status, kind) VALUES (?1, ?2, ?3, ?4, 'active', 'developer')",
+        params![id, title, now, now],
+    )
+    .map_err(|error| format!("Nie udalo sie utworzyc rozmowy developerskiej. {error}"))?;
 
     load_conversation(&db, &id)
 }
@@ -567,8 +691,9 @@ async fn build_memory_suggestions(
     )
     .map_err(|error| format!("Nie udalo sie przygotowac pamieci do analizy. {error}"))?;
 
-    let conversation_json = serde_json::to_string_pretty(&voice_messages)
-        .map_err(|error| format!("Nie udalo sie przygotowac rozmowy glosowej do analizy. {error}"))?;
+    let conversation_json = serde_json::to_string_pretty(&voice_messages).map_err(|error| {
+        format!("Nie udalo sie przygotowac rozmowy glosowej do analizy. {error}")
+    })?;
 
     let input = format!(
         r#"Istniejace wpisy pamieci:
@@ -577,8 +702,7 @@ async fn build_memory_suggestions(
 Rozmowa glosowa jako JSON:
 {}
 "#,
-        existing_memory_json,
-        conversation_json,
+        existing_memory_json, conversation_json,
     );
 
     let response_text = request_openai_text(VOICE_MEMORY_SUGGESTION_INSTRUCTIONS, &input).await?;
@@ -638,7 +762,6 @@ async fn save_voice_call_history(
         return Err("Brak tresci rozmowy glosowej do zapisania.".to_string());
     }
 
-
     let (conversation, messages, existing_memory) = {
         let now = unix_timestamp();
         let db = state
@@ -650,7 +773,7 @@ async fn save_voice_call_history(
         let title = normalize_title("Rozmowa glosowa");
 
         db.execute(
-            "INSERT INTO conversations (id, title, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, 'active')",
+            "INSERT INTO conversations (id, title, created_at, updated_at, status, kind) VALUES (?1, ?2, ?3, ?4, 'active', 'chat')",
             params![conversation_id, title, now, now],
         )
         .map_err(|error| format!("Nie udalo sie utworzyc rozmowy glosowej. {error}"))?;
@@ -667,10 +790,8 @@ async fn save_voice_call_history(
         (conversation, messages, existing_memory)
     };
 
-    
     let memory_suggestions =
-    build_memory_suggestions(&messages, &conversation.id, &existing_memory).await?;
-    
+        build_memory_suggestions(&messages, &conversation.id, &existing_memory).await?;
 
     let memory_suggestion_analysis = if memory_suggestions.is_empty() {
         MemorySuggestionAnalysis {
@@ -687,33 +808,32 @@ async fn save_voice_call_history(
         }
     };
 
-        Ok(VoiceCallHistoryResponse {
-            conversation: conversation,
-            messages,
-            memory_suggestions,
-            memory_suggestion_analysis,
-
-        })
-    }
-
+    Ok(VoiceCallHistoryResponse {
+        conversation: conversation,
+        messages,
+        memory_suggestions,
+        memory_suggestion_analysis,
+    })
+}
 
 #[tauri::command]
-async fn get_realtime_call_config(request: RealtimeCallConfigRequest) -> Result<RealtimeCallConfig, String> {
+async fn get_realtime_call_config(
+    request: RealtimeCallConfigRequest,
+) -> Result<RealtimeCallConfig, String> {
     let response = reqwest::Client::new()
-    .post("http://127.0.0.1:4317/realtime/call-config")
-    .json(&request)
-    .send()
-    .await
-    .map_err(|error| format!("Nie udalo sie polaczyc z backendem JS). {error}"))?;
-
+        .post("http://127.0.0.1:4317/realtime/call-config")
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| format!("Nie udalo sie polaczyc z backendem JS). {error}"))?;
 
     let status = response.status();
 
     if !status.is_success() {
         let error_body = response
-        .text()
-        .await
-        .unwrap_or_else(|_| "Nie udalo sie odczytac bledu backendu JS".to_string());
+            .text()
+            .await
+            .unwrap_or_else(|_| "Nie udalo sie odczytac bledu backendu JS".to_string());
 
         return Err(format!(
             "Backend JS zwrocil blad {}. {}",
@@ -725,8 +845,9 @@ async fn get_realtime_call_config(request: RealtimeCallConfigRequest) -> Result<
     response
         .json::<RealtimeCallConfig>()
         .await
-        .map_err(|error| format!("Nie udalo sie odczytac konfiguracji realtime z backendu JS. {error} "))
-
+        .map_err(|error| {
+            format!("Nie udalo sie odczytac konfiguracji realtime z backendu JS. {error} ")
+        })
 }
 
 async fn request_openai_realtime_call(
@@ -739,25 +860,25 @@ async fn request_openai_realtime_call(
         model: config.model.clone(),
         instructions: config.instructions.clone(),
         audio: OpenAIRealtimeAudioConfig {
-            input: OpenAIRealtimeAudioInputConfig{
+            input: OpenAIRealtimeAudioInputConfig {
                 transcription: OpenAIRealtimeAudioInputTranscriptionConfig {
                     model: "gpt-4o-mini-transcribe".to_string(),
                 },
             },
             output: OpenAIRealtimeAudioOutputConfig {
                 voice: config.voice.clone(),
-            }
-        }
+            },
+        },
     };
 
     let session_json = serde_json::to_string(&session)
-    .map_err(|error| format!("Nie udalo sie przygotowac konfiguracji realtime. {error}"))?;
+        .map_err(|error| format!("Nie udalo sie przygotowac konfiguracji realtime. {error}"))?;
     let form = reqwest::multipart::Form::new()
         .part(
             "sdp",
             reqwest::multipart::Part::text(sdp_offer.to_string())
-            .mime_str("application/sdp")
-            .map_err(|error| format!("Nie udalo sie przygotowac SDP offer. {error}"))?,
+                .mime_str("application/sdp")
+                .map_err(|error| format!("Nie udalo sie przygotowac SDP offer. {error}"))?,
         )
         .part(
             "session",
@@ -779,24 +900,22 @@ async fn request_openai_realtime_call(
         .text()
         .await
         .map_err(|error| format!("Nie udalo sie odczytac odpowiedzi OpenAI. {error}"))?;
-    
+
     if !status.is_success() {
         return Err(format!(
             "OpenAI Realtime API zwrocilo blad {}. {}",
             status.as_u16(),
             response_text,
-        ))
+        ));
     }
 
     Ok(response_text)
 }
 
-
-
-
 #[tauri::command]
-async fn create_realtime_call(request: CreateRealtimeCallRequest) 
--> Result<CreateRealtimeCallResponse, String> {
+async fn create_realtime_call(
+    request: CreateRealtimeCallRequest,
+) -> Result<CreateRealtimeCallResponse, String> {
     if request.sdp_offer.trim().is_empty() {
         return Err("Brakuje SDP offer dla polaczenia realtime.".to_string());
     }
@@ -808,25 +927,15 @@ async fn create_realtime_call(request: CreateRealtimeCallRequest)
     })
     .await?;
 
-    let api_key = std::env::var("OPENAI_API_KEY")
-    .map_err(|_| "Brakuje OPENAI_API_KEY w .env".to_string())?;
+    let api_key = load_openai_api_key()?;
 
-    let sdp_answer = request_openai_realtime_call(
-        &api_key,
-        &request.sdp_offer,
-        &config,
-    )
-    .await?;
-    
+    let sdp_answer = request_openai_realtime_call(&api_key, &request.sdp_offer, &config).await?;
+
     Ok(CreateRealtimeCallResponse {
         sdp_answer,
         preview: config.preview,
     })
-
-
 }
-
-
 
 #[tauri::command]
 fn list_memory_records(state: State<'_, AppState>) -> Result<Vec<MemoryRecord>, String> {
@@ -835,6 +944,7 @@ fn list_memory_records(state: State<'_, AppState>) -> Result<Vec<MemoryRecord>, 
         .lock()
         .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
 
+    cleanup_expired_camera_memory_records(&db)?;
     load_memory_records(&db)
 }
 
@@ -899,6 +1009,315 @@ fn delete_memory_record(id: String, state: State<'_, AppState>) -> Result<(), St
         .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
 
     remove_memory_record(&db, &id)
+}
+
+#[tauri::command]
+async fn propose_code_patch(input: String) -> Result<CodePatchProposal, String> {
+    let task = input.trim().to_string();
+
+    if task.is_empty() {
+        return Err("Opisz zmianę, którą XO ma zaproponować.".to_string());
+    }
+
+    let code_files = search_project_code_for_chat(&task)?;
+    let inspected_files = code_files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    let mut proposal_input = String::new();
+
+    proposal_input.push_str("Zadanie użytkownika:\n");
+    proposal_input.push_str(&task);
+    proposal_input.push_str("\n\nKontekst kodu projektu XO tylko do odczytu:\n");
+
+    if code_files.is_empty() {
+        proposal_input.push_str("- Nie znaleziono pasujących plików. Zaproponuj następne pliki do sprawdzenia zamiast zgadywać pełny patch.\n");
+    } else {
+        for file in &code_files {
+            proposal_input.push_str("\n--- ");
+            proposal_input.push_str(&file.path);
+            proposal_input.push_str(" ---\n");
+            proposal_input.push_str(&file.excerpt);
+            proposal_input.push('\n');
+        }
+    }
+
+    let proposal = request_openai_text(CODE_PATCH_PROPOSAL_INSTRUCTIONS, &proposal_input).await?;
+
+    Ok(CodePatchProposal {
+        task,
+        proposal,
+        inspected_files,
+        created_at: unix_timestamp(),
+    })
+}
+
+#[tauri::command]
+async fn apply_code_patch(
+    input: String,
+    ask_before_change: Option<bool>,
+    question_preference: Option<String>,
+    developer_run_id: Option<String>,
+    app: AppHandle,
+) -> Result<CodePatchApplyResult, String> {
+    let task = input.trim().to_string();
+    let ask_before_change = ask_before_change.unwrap_or(false);
+    let question_preference = question_preference
+        .map(|preference| truncate(preference.trim(), 500))
+        .filter(|preference| !preference.is_empty());
+
+    if task.is_empty() {
+        return Err("Opisz zmianę, którą XO ma wprowadzić w kodzie.".to_string());
+    }
+
+    build_and_apply_code_patch(
+        task,
+        ask_before_change,
+        question_preference,
+        None,
+        developer_run_id,
+        Some(&app),
+    )
+    .await
+}
+
+/// Buduje prompt do zmiany kodu, pozwala modelowi zapytać o doprecyzowanie i nakłada zwalidowany patch.
+async fn build_and_apply_code_patch(
+    task: String,
+    ask_before_change: bool,
+    question_preference: Option<String>,
+    developer_context: Option<&DeveloperPatchContext>,
+    developer_run_id: Option<String>,
+    app: Option<&AppHandle>,
+) -> Result<CodePatchApplyResult, String> {
+    run_codex_api_agent(
+        task,
+        ask_before_change,
+        question_preference,
+        developer_context,
+        developer_run_id,
+        app,
+    )
+    .await
+}
+
+/// Obsługuje wiadomość w developer-chacie: zapisuje rozmowę, wykonuje próbę zmiany kodu i zapisuje wynik jako odpowiedź.
+#[tauri::command]
+async fn send_developer_chat_message(
+    conversation_id: Option<String>,
+    input: String,
+    ask_before_change: Option<bool>,
+    question_preference: Option<String>,
+    developer_run_id: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<ChatResponse, String> {
+    let input = input.trim().to_string();
+
+    if input.is_empty() {
+        return Err("Opisz zmianę, którą XO ma wprowadzić w kodzie.".to_string());
+    }
+
+    let (conversation_id, user_message, restored_from_archive) = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+        let conversation_id =
+            ensure_conversation_of_kind(&db, conversation_id, &input, "developer")?;
+        let restored_from_archive = conversation_status(&db, &conversation_id)? == "archived";
+        let user_message = insert_message(&db, &conversation_id, "user", &input)?;
+
+        (conversation_id, user_message, restored_from_archive)
+    };
+    let developer_context = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+
+        load_developer_patch_context(&db, &conversation_id)?
+    };
+
+    let apply_result = build_and_apply_code_patch(
+        input.clone(),
+        ask_before_change.unwrap_or(true),
+        question_preference
+            .map(|preference| truncate(preference.trim(), 500))
+            .filter(|preference| !preference.is_empty()),
+        Some(&developer_context),
+        developer_run_id,
+        Some(&app),
+    )
+    .await;
+    let assistant_text = developer_chat_response_text(&apply_result);
+
+    let (assistant_message, conversation) = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "Nie udalo sie otworzyc lokalnej bazy XO.".to_string())?;
+        let assistant_message =
+            insert_message(&db, &conversation_id, "assistant", &assistant_text)?;
+
+        (assistant_message, load_conversation(&db, &conversation_id)?)
+    };
+
+    Ok(ChatResponse {
+        conversation,
+        user_message,
+        assistant_message,
+        memory_suggestions: Vec::new(),
+        memory_suggestion_analysis: MemorySuggestionAnalysis {
+            status: "empty".to_string(),
+            message: "Developer-chat nie proponuje wpisów pamięci po zmianach kodu.".to_string(),
+        },
+        restored_from_archive,
+    })
+}
+
+/// Zamienia wynik próby zmiany kodu na czytelną wiadomość asystenta w developer-chacie.
+fn developer_chat_response_text(result: &Result<CodePatchApplyResult, String>) -> String {
+    match result {
+        Ok(result) if result.needs_clarification => {
+            let agent_log = format_developer_agent_steps(&result.agent_steps);
+            format!(
+                "Potrzebuję doprecyzowania zanim zmienię kod:\n\n{}\n\n{}",
+                result
+                    .clarification_question
+                    .as_deref()
+                    .unwrap_or("Doprecyzuj oczekiwane działanie."),
+                agent_log,
+            )
+        }
+        Ok(result) => {
+            let changed_files = if result.changed_files.is_empty() {
+                "brak".to_string()
+            } else {
+                result
+                    .changed_files
+                    .iter()
+                    .map(|file| format!("- {file}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let agent_log = format_developer_agent_steps(&result.agent_steps);
+
+            format!(
+                "Wprowadziłem zmianę w kodzie.\n\nZmienione pliki:\n{changed_files}\n\nPatch czeka w working tree na Twój werdykt.\n\n{agent_log}"
+            )
+        }
+        Err(error) => developer_chat_error_text(error),
+    }
+}
+
+/// Dobiera komunikat błędu developer-chatu do faktycznego miejsca awarii: API, model albo patch.
+fn developer_chat_error_text(error: &str) -> String {
+    if is_openai_request_error(error) {
+        return format!(
+            "Nie udało mi się połączyć z modelem kodującym.\n\n{error}\n\nKod nie powinien zostać zmieniony, bo błąd wystąpił przed zastosowaniem patcha."
+        );
+    }
+
+    if is_patch_application_error(error) {
+        return format!(
+            "Nie udało mi się wprowadzić zmiany w kodzie.\n\n{error}\n\nPatch nie został zaakceptowany przez git apply. Sprawdź working tree przed kolejną próbą."
+        );
+    }
+
+    format!(
+        "Nie udało mi się wprowadzić zmiany w kodzie.\n\n{error}\n\nKod nie powinien zostać zmieniony, jeśli błąd wystąpił przed zastosowaniem patcha."
+    )
+}
+
+/// Rozpoznaje błędy połączenia lub konfiguracji OpenAI, żeby nie mylić ich z błędami git apply.
+fn is_openai_request_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+
+    normalized.contains("openai")
+        || normalized.contains("model")
+        || normalized.contains("api_key")
+        || normalized.contains("api key")
+        || normalized.contains("sending request")
+        || normalized.contains("request timed out")
+        || normalized.contains("timeout")
+        || normalized.contains("connection")
+        || normalized.contains("dns")
+}
+
+/// Rozpoznaje błędy nakładania patcha, dla których komunikat o git apply jest naprawdę trafny.
+fn is_patch_application_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+
+    normalized.contains("git apply")
+        || normalized.contains("patch")
+        || normalized.contains("unified diff")
+        || normalized.contains("working tree")
+}
+
+/// Formatuje jawny przebieg pracy agenta do zapisania w wiadomości developer-chatu.
+fn format_developer_agent_steps(agent_steps: &[DeveloperAgentStep]) -> String {
+    if agent_steps.is_empty() {
+        return "Przebieg pracy agenta:\n- Brak zarejestrowanych kroków.".to_string();
+    }
+
+    let mut output = "Przebieg pracy agenta:\n".to_string();
+
+    for step in agent_steps {
+        output.push_str(&format!("{}. {}\n", step.step, step.action));
+
+        if let Some(reason) = &step.reason {
+            output.push_str("   Powód: ");
+            output.push_str(reason);
+            output.push('\n');
+        }
+
+        output.push_str("   Wynik: ");
+        output.push_str(&truncate(&step.result.replace('\n', " "), 500));
+        output.push('\n');
+    }
+
+    output
+}
+
+#[tauri::command]
+fn run_developer_build() -> Result<DeveloperCommandResult, String> {
+    let project_root = project_root_path()?;
+    let output = Command::new(npm_command_name())
+        .arg("run")
+        .arg("build")
+        .current_dir(project_root)
+        .output()
+        .map_err(|error| format!("Nie udało się uruchomić builda. {error}"))?;
+
+    Ok(DeveloperCommandResult {
+        command: "npm run build".to_string(),
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        created_at: unix_timestamp(),
+    })
+}
+
+#[tauri::command]
+fn revert_code_patch(patch: String) -> Result<DeveloperCommandResult, String> {
+    let project_root = project_root_path()?;
+    let patch = patch.trim().to_string();
+
+    if patch.is_empty() {
+        return Err("Brak patcha do odrzucenia.".to_string());
+    }
+
+    validate_unified_diff_paths(&patch)?;
+    let output = apply_unified_diff_with_args(&project_root, &patch, &["--reverse"])?;
+
+    Ok(DeveloperCommandResult {
+        command: "git apply --reverse".to_string(),
+        success: true,
+        stdout: output,
+        stderr: String::new(),
+        created_at: unix_timestamp(),
+    })
 }
 
 #[tauri::command]
@@ -1561,7 +1980,8 @@ fn init_database(db_path: PathBuf) -> Result<Connection, String> {
           title TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
-          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived'))
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+          kind TEXT NOT NULL DEFAULT 'chat' CHECK(kind IN ('chat', 'developer'))
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -1610,7 +2030,9 @@ fn init_database(db_path: PathBuf) -> Result<Connection, String> {
     )
     .map_err(|error| format!("Nie udalo sie przygotowac bazy XO. {error}"))?;
     ensure_conversation_status_column(&db)?;
+    ensure_conversation_kind_column(&db)?;
     ensure_memory_source_columns(&db)?;
+    cleanup_expired_camera_memory_records(&db)?;
 
     Ok(db)
 }
@@ -1625,6 +2047,21 @@ fn ensure_conversation_status_column(db: &Connection) -> Result<(), String> {
             [],
         )
         .map_err(|error| format!("Nie udalo sie dodac statusu rozmow. {error}"))?;
+    }
+
+    Ok(())
+}
+
+/// Dodaje typ rozmowy w istniejacych bazach, aby backend wiedzial, ktory silnik obsluguje chat.
+fn ensure_conversation_kind_column(db: &Connection) -> Result<(), String> {
+    let columns = table_columns(db, "conversations")?;
+
+    if !columns.iter().any(|column| column == "kind") {
+        db.execute(
+            "ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'",
+            [],
+        )
+        .map_err(|error| format!("Nie udalo sie dodac typu rozmowy. {error}"))?;
     }
 
     Ok(())
@@ -1655,6 +2092,21 @@ fn archive_stale_conversations(db: &Connection) -> Result<(), String> {
         params![one_year_ago],
     )
     .map_err(|error| format!("Nie udalo sie zarchiwizowac starych rozmow. {error}"))?;
+
+    Ok(())
+}
+
+/// Usuwa wpisy pamięci powiązane z nagraniami kamery po 30 dniach od ich utworzenia.
+fn cleanup_expired_camera_memory_records(db: &Connection) -> Result<(), String> {
+    let thirty_days_ago = unix_timestamp() - 30 * 24 * 60 * 60;
+
+    db.execute(
+        "DELETE FROM memory_records WHERE source_kind = 'camera_recording' AND created_at < ?1",
+        params![thirty_days_ago],
+    )
+    .map_err(|error| {
+        format!("Nie udalo sie usunac starych wpisow pamieci z nagran kamery. {error}")
+    })?;
 
     Ok(())
 }
@@ -1701,8 +2153,11 @@ fn delete_conversation_with_memory_choice(
         .map_err(|error| format!("Nie udalo sie zachowac pamieci po usunieciu rozmowy. {error}"))?;
     }
 
-    db.execute("DELETE FROM conversations WHERE id = ?1", params![conversation_id])
-        .map_err(|error| format!("Nie udalo sie usunac rozmowy. {error}"))?;
+    db.execute(
+        "DELETE FROM conversations WHERE id = ?1",
+        params![conversation_id],
+    )
+    .map_err(|error| format!("Nie udalo sie usunac rozmowy. {error}"))?;
 
     Ok(())
 }
@@ -1712,29 +2167,49 @@ fn ensure_conversation(
     conversation_id: Option<String>,
     first_input: &str,
 ) -> Result<String, String> {
+    ensure_conversation_of_kind(db, conversation_id, first_input, "chat")
+}
+
+/// Zapewnia istnienie rozmowy wybranego typu i blokuje mieszanie zwykłego chatu z developer-chatem.
+fn ensure_conversation_of_kind(
+    db: &Connection,
+    conversation_id: Option<String>,
+    first_input: &str,
+    kind: &str,
+) -> Result<String, String> {
     if let Some(conversation_id) = conversation_id {
-        let exists = db
+        let conversation_kind = db
             .query_row(
-                "SELECT 1 FROM conversations WHERE id = ?1",
+                "SELECT kind FROM conversations WHERE id = ?1",
                 params![conversation_id],
-                |_| Ok(()),
+                |row| row.get::<_, String>(0),
             )
             .optional()
             .map_err(|error| format!("Nie udalo sie sprawdzic rozmowy. {error}"))?
-            .is_some();
+            .ok_or_else(|| "Nie znaleziono rozmowy.".to_string())?;
 
-        if exists {
-            return Ok(conversation_id);
+        if conversation_kind != kind {
+            return Err("Ten typ wiadomości nie pasuje do wybranej rozmowy.".to_string());
         }
+
+        return Ok(conversation_id);
     }
 
     let now = unix_timestamp();
-    let id = create_id("chat");
-    let title = title_from_input(first_input);
+    let id = create_id(if kind == "developer" {
+        "devchat"
+    } else {
+        "chat"
+    });
+    let title = if kind == "developer" {
+        normalize_title("Developer chat")
+    } else {
+        title_from_input(first_input)
+    };
 
     db.execute(
-        "INSERT INTO conversations (id, title, created_at, updated_at, status) VALUES (?1, ?2, ?3, ?4, 'active')",
-        params![id, title, now, now],
+        "INSERT INTO conversations (id, title, created_at, updated_at, status, kind) VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+        params![id, title, now, now, kind],
     )
     .map_err(|error| format!("Nie udalo sie utworzyc rozmowy. {error}"))?;
 
@@ -2042,7 +2517,13 @@ fn normalize_memory_content(content: &str) -> Result<String, String> {
 
 fn normalize_memory_source_kind(source_kind: &str) -> Result<String, String> {
     let source_kind = source_kind.trim();
-    let allowed = ["user", "gmail", "calendar", "conversation"];
+    let allowed = [
+        "user",
+        "gmail",
+        "calendar",
+        "conversation",
+        "camera_recording",
+    ];
 
     if allowed.contains(&source_kind) {
         Ok(source_kind.to_string())
@@ -2210,6 +2691,7 @@ fn memory_source_label(source_kind: &str, source_conversation_id: Option<&str>) 
         "user" => "dodane przez uzytkownika".to_string(),
         "gmail" => "Gmail".to_string(),
         "calendar" => "Kalendarz".to_string(),
+        "camera_recording" => "nagranie kamery".to_string(),
         "conversation" => source_conversation_id
             .map(|id| format!("rozmowa: {id}"))
             .unwrap_or_else(|| "rozmowa".to_string()),
@@ -2257,11 +2739,7 @@ fn table_columns(db: &Connection, table_name: &str) -> Result<Vec<String>, Strin
 async fn plan_tools_for_input(input: &str) -> Result<ToolPlan, String> {
     let planner_input = format!("Wiadomosc uzytkownika:\n{}", input);
 
-    let response_text = request_openai_text(
-        TOOL_PLANNER_INSTRUCTIONS,
-        &planner_input,
-    )
-    .await?;
+    let response_text = request_openai_text(TOOL_PLANNER_INSTRUCTIONS, &planner_input).await?;
 
     let json_text = extract_json_payload(&response_text)
         .ok_or_else(|| "Planner narzedzi nie zwrocil JSON.".to_string())?;
@@ -2304,9 +2782,18 @@ async fn build_tool_context(
             }
             Err(error) => {
                 context
-                .notes
-                .push(format!("Nie udalo sie przeszukac pamieci XO: {error}"));            
+                    .notes
+                    .push(format!("Nie udalo sie przeszukac pamieci XO: {error}"));
             }
+        }
+    }
+
+    if tool_plan.inspect_code {
+        match search_project_code_for_chat(input) {
+            Ok(files) => context.code_files = Some(files),
+            Err(error) => context
+                .notes
+                .push(format!("Nie udalo sie odczytac kodu projektu XO: {error}")),
         }
     }
 
@@ -2324,7 +2811,6 @@ async fn build_tool_context(
 
     log::info!("ToolContenxt: {:?}", context);
     context
-
 }
 
 async fn load_calendar_events_for_chat(
@@ -2364,16 +2850,15 @@ async fn load_gmail_messages_for_chat(
 }
 
 fn search_memory_for_chat(
-     state: &State<'_, AppState>,
-     conversation_id: &str,
-     input: &str,
+    state: &State<'_, AppState>,
+    conversation_id: &str,
+    input: &str,
 ) -> Result<(Vec<MemoryRecord>, Vec<String>), String> {
     let keywords = memory_search_keywords(input);
 
     if keywords.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
-
 
     let db = state
         .db
@@ -2382,7 +2867,7 @@ fn search_memory_for_chat(
 
     let memory_records = load_memory_records(&db)?
         .into_iter()
-        .filter(|record|  text_matches_keywords(&record.content, &keywords))
+        .filter(|record| text_matches_keywords(&record.content, &keywords))
         .take(12)
         .collect::<Vec<_>>();
 
@@ -2396,15 +2881,13 @@ fn search_memory_for_chat(
 }
 
 /// funkcja rozczłonkowuje string na tokeny
-fn memory_search_keywords(input: &str) ->Vec<String> {
+fn memory_search_keywords(input: &str) -> Vec<String> {
     input
         .to_lowercase()
         .split_whitespace()
         .map(|word| {
-            word
-                .trim_matches(|character: char| !character.is_alphanumeric())
+            word.trim_matches(|character: char| !character.is_alphanumeric())
                 .to_string()
-            
         })
         .filter(|word| word.chars().count() >= 4)
         .take(12)
@@ -2414,8 +2897,954 @@ fn memory_search_keywords(input: &str) ->Vec<String> {
 fn text_matches_keywords(text: &str, keywords: &[String]) -> bool {
     let normalized = text.to_lowercase();
 
-    keywords.iter()
-    .any(|keyword| normalized.contains(keyword))
+    keywords.iter().any(|keyword| normalized.contains(keyword))
+}
+
+/// Uruchamia kontrolowany agent loop przez OpenAI API: model wybiera akcje, a Rust wykonuje tylko dozwolone operacje.
+async fn run_codex_api_agent(
+    task: String,
+    ask_before_change: bool,
+    question_preference: Option<String>,
+    developer_context: Option<&DeveloperPatchContext>,
+    developer_run_id: Option<String>,
+    app: Option<&AppHandle>,
+) -> Result<CodePatchApplyResult, String> {
+    let project_root = project_root_path()?;
+    let file_index = project_code_file_index()?;
+    let developer_run_id = developer_run_id.unwrap_or_else(|| create_id("devrun"));
+    let mut inspected_files = Vec::new();
+    let mut read_files = Vec::new();
+    let mut transcript = String::new();
+    let mut agent_steps = Vec::new();
+    let mut applied_patch = String::new();
+    let mut changed_files = Vec::new();
+    let push_developer_agent_step = |agent_steps: &mut Vec<DeveloperAgentStep>,
+                                     step: i64,
+                                     action: &str,
+                                     reason: Option<String>,
+                                     result: String| {
+        push_developer_agent_step(agent_steps, step, action, reason, result);
+
+        if let (Some(app), Some(agent_step)) = (app, agent_steps.last()) {
+            let event = DeveloperAgentStepEvent {
+                run_id: developer_run_id.clone(),
+                step: agent_step.clone(),
+            };
+
+            if let Err(error) = app.emit("developer-agent-step", event) {
+                log::warn!("Nie udalo sie wyslac live logu agenta: {error}");
+            }
+        }
+    };
+    push_developer_agent_step(
+        &mut agent_steps,
+        0,
+        "start",
+        None,
+        "Rozpoczęto pracę agenta kodującego.".to_string(),
+    );
+
+    for step in 1..=8 {
+        let agent_input = build_codex_agent_input(
+            &task,
+            ask_before_change,
+            &question_preference,
+            developer_context,
+            &file_index,
+            &read_files,
+            &transcript,
+        );
+        let response_text = request_openai_code_text(CODE_AGENT_INSTRUCTIONS, &agent_input).await?;
+        let action = parse_developer_agent_action(&response_text)?;
+        let action_name = action.action.clone();
+        let action_reason = action.reason.clone().map(|reason| truncate(&reason, 500));
+
+        if let Some(reason) = action.reason.as_deref() {
+            transcript.push_str(&format!(
+                "\nKrok {step}, powod akcji {}: {}\n",
+                action.action,
+                truncate(reason, 500)
+            ));
+        }
+
+        match action.action.as_str() {
+            "read_file" => {
+                let path = action
+                    .path
+                    .as_deref()
+                    .ok_or_else(|| "Akcja read_file nie zawiera path.".to_string())?;
+                let file = read_agent_project_file(&project_root, &file_index, path)?;
+
+                if !inspected_files.iter().any(|item| item == &file.path) {
+                    inspected_files.push(file.path.clone());
+                    read_files.push(file);
+                }
+
+                let result = format!(
+                    "Wynik read_file: przeczytano {}.\n",
+                    inspected_files.last().cloned().unwrap_or_default()
+                );
+                transcript.push_str(&result);
+                push_developer_agent_step(
+                    &mut agent_steps,
+                    step,
+                    &action_name,
+                    action_reason,
+                    result,
+                );
+            }
+            "apply_patch" => {
+                let Some(raw_patch) = action.patch.as_deref() else {
+                    let result = "Wynik apply_patch: akcja nie zawiera pola patch. Zwroc poprawny unified diff albo wybierz read_file.\n".to_string();
+                    transcript.push_str(&result);
+                    push_developer_agent_step(
+                        &mut agent_steps,
+                        step,
+                        &action_name,
+                        action_reason.clone(),
+                        result,
+                    );
+                    continue;
+                };
+                let Some(mut patch) = extract_diff_payload(raw_patch) else {
+                    let mut result = "Wynik apply_patch: patch nie jest poprawnym unified diffem. Zwroc diff zaczynajacy sie od diff --git, z naglowkami ---/+++ i hunkami @@.\n".to_string();
+                    result.push_str("Odrzucony patch, skrocony:\n");
+                    result.push_str(&truncate(raw_patch, 2000));
+                    result.push('\n');
+                    transcript.push_str(&result);
+                    push_developer_agent_step(
+                        &mut agent_steps,
+                        step,
+                        &action_name,
+                        action_reason.clone(),
+                        result,
+                    );
+                    continue;
+                };
+
+                if let Err(error) = ensure_patch_touches_only_read_files(&patch, &inspected_files) {
+                    let result =
+                        format!("Wynik apply_patch: patch odrzucony przed git apply.\n{error}\n");
+                    transcript.push_str(&result);
+                    push_developer_agent_step(
+                        &mut agent_steps,
+                        step,
+                        &action_name,
+                        action_reason.clone(),
+                        result,
+                    );
+                    continue;
+                }
+
+                let proposed_changed_files = match validate_unified_diff_paths(&patch) {
+                    Ok(paths) => paths,
+                    Err(error) => {
+                        let result =
+                            format!("Wynik apply_patch: patch ma niepoprawne sciezki.\n{error}\n");
+                        transcript.push_str(&result);
+                        push_developer_agent_step(
+                            &mut agent_steps,
+                            step,
+                            &action_name,
+                            action_reason.clone(),
+                            result,
+                        );
+                        continue;
+                    }
+                };
+
+                if let Err(apply_error) = apply_unified_diff(&project_root, &patch) {
+                    let repair_input = build_codex_agent_input(
+                        &task,
+                        ask_before_change,
+                        &question_preference,
+                        developer_context,
+                        &file_index,
+                        &read_files,
+                        &transcript,
+                    );
+                    let repaired_patch = match repair_code_patch(
+                        &repair_input,
+                        &patch,
+                        &apply_error,
+                    )
+                    .await
+                    {
+                        Ok(value) => value,
+                        Err(repair_error) => {
+                            let mut result = "Wynik apply_patch: git apply odrzucil patch, a naprawa modelu tez sie nie powiodla.\n".to_string();
+                            result.push_str(&truncate(&apply_error, 2000));
+                            result.push_str("\nBlad naprawy:\n");
+                            result.push_str(&truncate(&repair_error, 2000));
+                            result.push('\n');
+                            transcript.push_str(&result);
+                            push_developer_agent_step(
+                                &mut agent_steps,
+                                step,
+                                &action_name,
+                                action_reason.clone(),
+                                result,
+                            );
+                            continue;
+                        }
+                    };
+
+                    if let Err(error) =
+                        ensure_patch_touches_only_read_files(&repaired_patch, &inspected_files)
+                    {
+                        let result = format!(
+                            "Wynik apply_patch: naprawiony patch odrzucony przed git apply.\n{error}\n",
+                        );
+                        transcript.push_str(&result);
+                        push_developer_agent_step(
+                            &mut agent_steps,
+                            step,
+                            &action_name,
+                            action_reason.clone(),
+                            result,
+                        );
+                        continue;
+                    }
+
+                    let repaired_changed_files = match validate_unified_diff_paths(&repaired_patch)
+                    {
+                        Ok(paths) => paths,
+                        Err(error) => {
+                            let result = format!(
+                                "Wynik apply_patch: naprawiony patch ma niepoprawne sciezki.\n{error}\n",
+                            );
+                            transcript.push_str(&result);
+                            push_developer_agent_step(
+                                &mut agent_steps,
+                                step,
+                                &action_name,
+                                action_reason.clone(),
+                                result,
+                            );
+                            continue;
+                        }
+                    };
+
+                    if let Err(repair_apply_error) =
+                        apply_unified_diff(&project_root, &repaired_patch)
+                    {
+                        let mut result = "Wynik apply_patch: git apply odrzucil patch i jego naprawiona wersje.\n".to_string();
+                        result.push_str(&truncate(&apply_error, 2000));
+                        result.push_str("\nBlad naprawionego patcha:\n");
+                        result.push_str(&truncate(&repair_apply_error, 2000));
+                        result.push('\n');
+                        transcript.push_str(&result);
+                        push_developer_agent_step(
+                            &mut agent_steps,
+                            step,
+                            &action_name,
+                            action_reason.clone(),
+                            result,
+                        );
+                        continue;
+                    }
+
+                    patch = repaired_patch;
+                    changed_files = repaired_changed_files;
+                } else {
+                    changed_files = proposed_changed_files;
+                }
+
+                applied_patch = patch;
+                let result =
+                    "Wynik apply_patch: patch zostal zastosowany w working tree.\n".to_string();
+                transcript.push_str(&result);
+                push_developer_agent_step(
+                    &mut agent_steps,
+                    step,
+                    &action_name,
+                    action_reason,
+                    result,
+                );
+            }
+            "run_build" => {
+                let build_result = run_developer_build()?;
+                let mut result = "Wynik run_build:\n".to_string();
+                result.push_str(&format!("success: {}\n", build_result.success));
+                result.push_str(&truncate(&build_result.stdout, 4000));
+                result.push('\n');
+                result.push_str(&truncate(&build_result.stderr, 4000));
+                result.push('\n');
+                transcript.push_str(&result);
+                push_developer_agent_step(
+                    &mut agent_steps,
+                    step,
+                    &action_name,
+                    action_reason,
+                    result,
+                );
+            }
+            "clarify" => {
+                let message = action
+                    .message
+                    .map(|value| truncate(value.trim(), 500))
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "Doprecyzuj oczekiwane działanie.".to_string());
+
+                return Ok(CodePatchApplyResult {
+                    task,
+                    patch: String::new(),
+                    inspected_files,
+                    changed_files: Vec::new(),
+                    agent_steps,
+                    needs_clarification: true,
+                    clarification_question: Some(message),
+                    created_at: unix_timestamp(),
+                });
+            }
+            "finish" => {
+                if applied_patch.is_empty() {
+                    return Err("Agent zakonczyl prace bez zastosowania patcha.".to_string());
+                }
+
+                return Ok(CodePatchApplyResult {
+                    task,
+                    patch: applied_patch,
+                    inspected_files,
+                    changed_files,
+                    agent_steps,
+                    needs_clarification: false,
+                    clarification_question: None,
+                    created_at: unix_timestamp(),
+                });
+            }
+            other => {
+                return Err(format!("Agent zwrocil nieznana akcje: {other}."));
+            }
+        }
+    }
+
+    if applied_patch.is_empty() {
+        return Err("Agent przekroczyl limit krokow bez zastosowania patcha.".to_string());
+    }
+
+    Ok(CodePatchApplyResult {
+        task,
+        patch: applied_patch,
+        inspected_files,
+        changed_files,
+        agent_steps,
+        needs_clarification: false,
+        clarification_question: None,
+        created_at: unix_timestamp(),
+    })
+}
+
+/// Dodaje jawny, skrócony krok pracy agenta do wyniku zwracanego frontendowi.
+fn push_developer_agent_step(
+    agent_steps: &mut Vec<DeveloperAgentStep>,
+    step: i64,
+    action: &str,
+    reason: Option<String>,
+    result: String,
+) {
+    agent_steps.push(DeveloperAgentStep {
+        step,
+        action: action.to_string(),
+        reason,
+        result: truncate(&result, 1600),
+    });
+}
+
+/// Ładuje historię aktualnego developer-chatu i preferencje pamięci oznaczone słowem developer.
+fn load_developer_patch_context(
+    db: &Connection,
+    conversation_id: &str,
+) -> Result<DeveloperPatchContext, String> {
+    let conversation_history = load_messages(db, conversation_id)?;
+    let developer_preferences = load_memory_records(db)?
+        .into_iter()
+        .filter(|record| {
+            record.category == "preference" && record.content.to_lowercase().contains("developer")
+        })
+        .take(12)
+        .collect::<Vec<_>>();
+
+    Ok(DeveloperPatchContext {
+        conversation_history,
+        developer_preferences,
+    })
+}
+
+/// Składa pełny stan kroku agent loop: zadanie, pamięć developer, indeks plików, przeczytane pliki i wyniki akcji.
+fn build_codex_agent_input(
+    task: &str,
+    ask_before_change: bool,
+    question_preference: &Option<String>,
+    developer_context: Option<&DeveloperPatchContext>,
+    file_index: &[String],
+    read_files: &[CodeFileContext],
+    transcript: &str,
+) -> String {
+    let mut input = String::new();
+
+    input.push_str("Zadanie użytkownika:\n");
+    input.push_str(task);
+    append_developer_patch_context(&mut input, developer_context);
+    input.push_str("\n\nPolityka pytania przed zmiana:\n");
+    input.push_str(if ask_before_change {
+        "- Funkcja zapytaj przed dodaniem jest wlaczona, ale pytanie do uzytkownika jest dozwolone tylko wtedy, gdy jest naprawde niezbedne.\n"
+    } else {
+        "- Funkcja zapytaj przed dodaniem jest wylaczona.\n"
+    });
+    input.push_str("- Pytaj tylko o decyzje funkcjonalne, bezpieczenstwo, prywatnosc, utrate danych, integracje z zewnetrznymi uslugami albo nieodwracalne skutki.\n");
+    input.push_str("- Nie pytaj o drobne decyzje UI lub implementacyjne: polozenie przycisku, prosty tekst etykiety, nazwe helpera, kolor, spacing albo wybor oczywistego istniejacego wzorca.\n");
+    input.push_str("- Jesli brakuje drobnej decyzji, przyjmij konserwatywne zalozenie zgodne z obecnym stylem aplikacji i zapisz je w reason.\n");
+
+    if let Some(preference) = question_preference {
+        input.push_str("- Preferencje uzytkownika: ");
+        input.push_str(preference);
+        input.push('\n');
+    }
+
+    input.push_str("\n\nIndeks plikow projektu XO:\n");
+    for path in file_index.iter().take(500) {
+        input.push_str("- ");
+        input.push_str(path);
+        input.push('\n');
+    }
+
+    input.push_str("\n\nPrzeczytane pliki:\n");
+    if read_files.is_empty() {
+        input.push_str("- Brak przeczytanych plikow. Zacznij od read_file.\n");
+    } else {
+        for file in read_files {
+            input.push_str("\n--- ");
+            input.push_str(&file.path);
+            input.push_str(" ---\n");
+            input.push_str(&file.excerpt);
+            input.push('\n');
+        }
+    }
+
+    input.push_str("\n\nTranskrypt wykonanych akcji:\n");
+    if transcript.trim().is_empty() {
+        input.push_str("- Brak wcześniejszych akcji.\n");
+    } else {
+        input.push_str(transcript);
+    }
+
+    input
+}
+
+/// Parsuje pojedynczą akcję JSON zwróconą przez model i odrzuca zwykłą odpowiedź tekstową.
+fn parse_developer_agent_action(response_text: &str) -> Result<DeveloperAgentAction, String> {
+    let json_text = extract_json_payload(response_text).ok_or_else(|| {
+        let preview = truncate(&response_text.replace('\n', " "), 500);
+        format!("Agent kodu nie zwrocil akcji JSON. Początek odpowiedzi modelu: {preview}")
+    })?;
+
+    serde_json::from_str::<DeveloperAgentAction>(&json_text)
+        .map_err(|error| format!("Nie udało się odczytać akcji agenta kodu. {error}"))
+}
+
+/// Czyta jeden plik wskazany przez model tylko wtedy, gdy znajduje się w bezpiecznym indeksie projektu.
+fn read_agent_project_file(
+    project_root: &Path,
+    file_index: &[String],
+    raw_path: &str,
+) -> Result<CodeFileContext, String> {
+    let normalized = normalize_patch_path(raw_path)?;
+
+    if !file_index.iter().any(|path| path == &normalized) {
+        return Err(format!(
+            "Agent poprosil o plik spoza dozwolonego indeksu projektu: {normalized}."
+        ));
+    }
+
+    let content = fs::read_to_string(project_root.join(&normalized))
+        .map_err(|error| format!("Nie udalo sie odczytac pliku kodu. {error}"))?;
+
+    Ok(CodeFileContext {
+        path: normalized,
+        excerpt: truncate(&content, 80000),
+    })
+}
+
+/// Pilnuje, żeby patch zmieniał wyłącznie pliki, które agent wcześniej jawnie przeczytał.
+fn ensure_patch_touches_only_read_files(
+    patch: &str,
+    inspected_files: &[String],
+) -> Result<(), String> {
+    let changed_files = validate_unified_diff_paths(patch)?;
+
+    for changed_file in changed_files {
+        if !inspected_files.iter().any(|file| file == &changed_file) {
+            return Err(format!(
+                "Agent probowal zmienic plik, ktorego wczesniej nie przeczytal: {changed_file}."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Dopisuje do promptu historię developer-chatu i preferencje, bez mieszania ich ze zwykłą pamięcią.
+fn append_developer_patch_context(
+    input: &mut String,
+    developer_context: Option<&DeveloperPatchContext>,
+) {
+    if let Some(context) = developer_context {
+        input.push_str("\n\nHistoria aktualnego developer-chatu:\n");
+        if context.conversation_history.is_empty() {
+            input.push_str("- To początek tej rozmowy developerskiej.\n");
+        } else {
+            for message in context
+                .conversation_history
+                .iter()
+                .rev()
+                .take(24)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
+                input.push_str(match message.role.as_str() {
+                    "assistant" => "XO Developer: ",
+                    _ => "Uzytkownik: ",
+                });
+                input.push_str(&truncate(&message.content, 1200));
+                input.push('\n');
+            }
+        }
+
+        input.push_str("\nPreferencje użytkownika oznaczone jako developer:\n");
+        if context.developer_preferences.is_empty() {
+            input.push_str("- Brak zapisanych preferencji developerskich.\n");
+        } else {
+            for preference in &context.developer_preferences {
+                input.push_str("- ");
+                input.push_str(&truncate(&preference.content, 500));
+                input.push('\n');
+            }
+        }
+    }
+}
+
+/// Szuka małej liczby pasujących plików kodu projektu i zwraca bezpieczne wycinki do promptu XO.
+fn search_project_code_for_chat(input: &str) -> Result<Vec<CodeFileContext>, String> {
+    let project_root = project_root_path()?;
+    let keywords = code_search_keywords(input);
+    let mut files = Vec::new();
+
+    collect_code_files(&project_root, &project_root, &keywords, &mut files)?;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    files.truncate(8);
+
+    Ok(files)
+}
+
+/// Buduje sam indeks ścieżek plików kodu, bez treści plików i bez katalogów zależności albo sekretów.
+fn project_code_file_index() -> Result<Vec<String>, String> {
+    let project_root = project_root_path()?;
+    let mut files = Vec::new();
+
+    collect_code_file_index(&project_root, &project_root, &mut files)?;
+    files.sort();
+
+    Ok(files)
+}
+
+/// Rekurencyjnie zbiera ścieżki dozwolonych plików źródłowych dla pierwszego etapu wyboru kontekstu.
+fn collect_code_file_index(
+    root: &Path,
+    directory: &Path,
+    output: &mut Vec<String>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(directory)
+        .map_err(|error| format!("Nie udalo sie odczytac katalogu kodu. {error}"))?;
+
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("Nie udalo sie odczytac wpisu katalogu. {error}"))?;
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+
+        if path.is_dir() {
+            if should_skip_code_directory(&file_name) {
+                continue;
+            }
+
+            collect_code_file_index(root, &path, output)?;
+            continue;
+        }
+
+        if !is_supported_code_file(&path, &file_name) {
+            continue;
+        }
+
+        let relative_path = path
+            .strip_prefix(root)
+            .unwrap_or(path.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        output.push(relative_path);
+    }
+
+    Ok(())
+}
+
+/// Wyznacza katalog repo na podstawie położenia crate'a Tauri, bez przyjmowania ścieżki od użytkownika.
+fn project_root_path() -> Result<PathBuf, String> {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Nie udalo sie ustalic katalogu projektu XO.".to_string())
+}
+
+/// Rekurencyjnie zbiera czytelne pliki źródłowe, omijając katalogi buildów, zależności i sekrety.
+fn collect_code_files(
+    root: &Path,
+    directory: &Path,
+    keywords: &[String],
+    output: &mut Vec<CodeFileContext>,
+) -> Result<(), String> {
+    if output.len() >= 8 {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(directory)
+        .map_err(|error| format!("Nie udalo sie odczytac katalogu kodu. {error}"))?;
+
+    for entry in entries {
+        if output.len() >= 8 {
+            break;
+        }
+
+        let entry =
+            entry.map_err(|error| format!("Nie udalo sie odczytac wpisu katalogu. {error}"))?;
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+
+        if path.is_dir() {
+            if should_skip_code_directory(&file_name) {
+                continue;
+            }
+
+            collect_code_files(root, &path, keywords, output)?;
+            continue;
+        }
+
+        if !is_supported_code_file(&path, &file_name) {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Nie udalo sie odczytac pliku kodu. {error}"))?;
+
+        if !keywords.is_empty()
+            && !text_matches_keywords(&content, keywords)
+            && !text_matches_keywords(&file_name, keywords)
+        {
+            continue;
+        }
+
+        let relative_path = path
+            .strip_prefix(root)
+            .unwrap_or(path.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        output.push(CodeFileContext {
+            path: relative_path,
+            excerpt: truncate(&content, 6000),
+        });
+    }
+
+    Ok(())
+}
+
+fn should_skip_code_directory(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".agents" | ".codex" | "node_modules" | "target" | "dist" | "build"
+    )
+}
+
+fn is_supported_code_file(path: &Path, file_name: &str) -> bool {
+    if file_name.starts_with(".env")
+        || file_name.ends_with(".lock")
+        || file_name.eq_ignore_ascii_case("package-lock.json")
+    {
+        return false;
+    }
+
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("rs" | "ts" | "tsx" | "css" | "md" | "json" | "toml")
+    )
+}
+
+fn code_search_keywords(input: &str) -> Vec<String> {
+    let mut keywords = memory_search_keywords(input);
+    keywords.retain(|keyword| !is_common_code_request_word(keyword));
+
+    keywords
+}
+
+fn is_common_code_request_word(word: &str) -> bool {
+    matches!(
+        word,
+        "dodaj"
+            | "zrob"
+            | "zrób"
+            | "opcja"
+            | "opcje"
+            | "funkcja"
+            | "kod"
+            | "kodu"
+            | "plik"
+            | "aplikacji"
+            | "zaimplementuj"
+            | "popraw"
+            | "zmien"
+            | "zmień"
+    )
+}
+
+/// Wyciąga unified diff z odpowiedzi modelu i odrzuca zwykły opis bez patcha.
+fn extract_diff_payload(response_text: &str) -> Option<String> {
+    let trimmed = response_text.trim();
+
+    if looks_like_unified_diff(trimmed) {
+        return Some(trimmed.to_string());
+    }
+
+    let mut remaining = trimmed;
+    while let Some((_, rest)) = remaining.split_once("```") {
+        if let Some((block, tail)) = rest.split_once("```") {
+            let diff = strip_diff_fence_language(block).trim();
+
+            if looks_like_unified_diff(diff) {
+                return Some(diff.to_string());
+            }
+
+            remaining = tail;
+        } else {
+            break;
+        }
+    }
+
+    if let Some((_, diff)) = trimmed.split_once("diff --git ") {
+        let diff = format!("diff --git {}", diff.trim());
+
+        if looks_like_unified_diff(&diff) {
+            return Some(diff);
+        }
+    }
+
+    if let Some(diff) = extract_plain_unified_diff(trimmed) {
+        return Some(diff);
+    }
+
+    None
+}
+
+/// Prosi model o jedną naprawę syntaktycznie błędnego patcha, używając tego samego kontekstu kodu.
+async fn repair_code_patch(
+    original_patch_input: &str,
+    rejected_patch: &str,
+    git_error: &str,
+) -> Result<String, String> {
+    let mut repair_input = String::new();
+
+    repair_input.push_str("Oryginalne zadanie i kontekst kodu:\n");
+    repair_input.push_str(original_patch_input);
+    repair_input.push_str("\n\nPatch odrzucony przez git apply:\n");
+    repair_input.push_str(rejected_patch);
+    repair_input.push_str("\n\nBlad git apply:\n");
+    repair_input.push_str(git_error);
+
+    let response_text =
+        request_openai_code_text(CODE_PATCH_REPAIR_INSTRUCTIONS, &repair_input).await?;
+
+    extract_diff_payload(&response_text).ok_or_else(|| {
+        let preview = truncate(&response_text.replace('\n', " "), 500);
+        format!(
+            "Model nie zwrocil poprawionego unified diff. Początek odpowiedzi modelu: {preview}"
+        )
+    })
+}
+
+/// Usuwa nazwę języka z bloku markdown, jeśli model mimo instrukcji opakował patch w ```diff.
+fn strip_diff_fence_language(block: &str) -> &str {
+    block
+        .strip_prefix("diff\r\n")
+        .or_else(|| block.strip_prefix("diff\n"))
+        .or_else(|| block.strip_prefix("patch\r\n"))
+        .or_else(|| block.strip_prefix("patch\n"))
+        .unwrap_or(block)
+}
+
+/// Rozpoznaje minimalne cechy unified diffu, zanim przekażemy go do walidacji ścieżek i git apply.
+fn looks_like_unified_diff(value: &str) -> bool {
+    let has_file_headers = value.contains("diff --git ")
+        || (value.lines().any(|line| line.starts_with("--- "))
+            && value.lines().any(|line| line.starts_with("+++ ")));
+
+    has_file_headers && value.lines().any(|line| line.starts_with("@@"))
+}
+
+/// Wyciąga diff zaczynający się od nagłówków ---/+++, gdy model pominął linię diff --git.
+fn extract_plain_unified_diff(value: &str) -> Option<String> {
+    let lines = value.lines().collect::<Vec<_>>();
+    let start_index = lines
+        .iter()
+        .position(|line| line.starts_with("--- ") || line.starts_with("diff --git "))?;
+    let diff = lines[start_index..].join("\n").trim().to_string();
+
+    if looks_like_unified_diff(&diff) {
+        Some(diff)
+    } else {
+        None
+    }
+}
+
+/// Sprawdza, czy patch dotyczy tylko zwykłych plików projektu i zwraca listę zmienionych ścieżek.
+fn validate_unified_diff_paths(patch: &str) -> Result<Vec<String>, String> {
+    let mut changed_files = Vec::new();
+
+    for line in patch.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let mut parts = rest.split_whitespace();
+            let old_path = parts.next().unwrap_or_default();
+            let new_path = parts.next().unwrap_or_default();
+
+            validate_patch_path(old_path)?;
+            validate_patch_path(new_path)?;
+
+            let normalized = normalize_patch_path(new_path)?;
+
+            if !changed_files.iter().any(|path| path == &normalized) {
+                changed_files.push(normalized);
+            }
+        } else if let Some(path) = line.strip_prefix("--- ") {
+            validate_patch_path(path)?;
+        } else if let Some(path) = line.strip_prefix("+++ ") {
+            validate_patch_path(path)?;
+
+            if path.split_whitespace().next().unwrap_or_default() != "/dev/null" {
+                let normalized = normalize_patch_path(path)?;
+
+                if !changed_files.iter().any(|path| path == &normalized) {
+                    changed_files.push(normalized);
+                }
+            }
+        }
+    }
+
+    if changed_files.is_empty() {
+        return Err("Patch nie zawiera listy zmienionych plików.".to_string());
+    }
+
+    Ok(changed_files)
+}
+
+fn validate_patch_path(raw_path: &str) -> Result<(), String> {
+    if raw_path == "/dev/null" {
+        return Ok(());
+    }
+
+    let normalized = normalize_patch_path(raw_path)?;
+
+    if normalized.starts_with(".env") || normalized.contains("/.env") {
+        return Err("Patch próbuje zmienić plik środowiskowy .env.".to_string());
+    }
+
+    for part in normalized.split('/') {
+        if matches!(part, ".git" | "node_modules" | "target" | "dist" | "build") {
+            return Err(format!("Patch próbuje zmienić chroniony katalog: {part}."));
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_patch_path(raw_path: &str) -> Result<String, String> {
+    let path = raw_path
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim();
+    let path = path
+        .strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path);
+
+    if path.is_empty() {
+        return Err("Patch zawiera pustą ścieżkę.".to_string());
+    }
+
+    let path_buf = PathBuf::from(path);
+
+    if path_buf.is_absolute() || path.contains("..") {
+        return Err("Patch próbuje wyjść poza katalog projektu.".to_string());
+    }
+
+    Ok(path.replace('\\', "/"))
+}
+
+/// Nakłada zwalidowany unified diff przez git apply, bez commita i bez uruchamiania dodatkowych komend.
+fn apply_unified_diff(project_root: &Path, patch: &str) -> Result<(), String> {
+    match apply_unified_diff_with_args(project_root, patch, &[]) {
+        Ok(_) => Ok(()),
+        Err(primary_error) => {
+            apply_unified_diff_with_args(project_root, patch, &["--3way"]).map(|_| ()).map_err(
+                |fallback_error| {
+                    format!(
+                        "{primary_error}\n\nProba dopasowania patcha przez git apply --3way tez sie nie powiodla: {fallback_error}"
+                    )
+                },
+            )
+        }
+    }
+}
+
+fn apply_unified_diff_with_args(
+    project_root: &Path,
+    patch: &str,
+    extra_args: &[&str],
+) -> Result<String, String> {
+    let mut child = Command::new("git")
+        .arg("apply")
+        .arg("--whitespace=nowarn")
+        .args(extra_args)
+        .current_dir(project_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Nie udalo sie uruchomic git apply. {error}"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(patch.as_bytes())
+            .map_err(|error| format!("Nie udalo sie przekazac patcha do git apply. {error}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Nie udalo sie poczekac na git apply. {error}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Nie udalo sie zastosowac patcha. {stderr}"))
+    }
+}
+
+fn npm_command_name() -> &'static str {
+    if cfg!(windows) {
+        "npm.cmd"
+    } else {
+        "npm"
+    }
 }
 
 fn should_use_calendar(input: &str) -> bool {
@@ -2468,7 +3897,8 @@ fn append_tool_context(input: &mut String, tool_context: &ToolContext) {
         || tool_context.gmail_messages.is_some()
         || !tool_context.notes.is_empty()
         || tool_context.memory_records.is_some()
-        || tool_context.conversation_memory.is_some();
+        || tool_context.conversation_memory.is_some()
+        || tool_context.code_files.is_some();
 
     if !has_any_context {
         input.push_str("- Brak wywolanych narzedzi dla tej wiadomosci.\n");
@@ -2538,7 +3968,7 @@ fn append_tool_context(input: &mut String, tool_context: &ToolContext) {
             input.push_str("] )");
             input.push_str(&memory_record.content);
             input.push('\n');
-        };
+        }
     }
 
     if let Some(conversation_memory_records) = &tool_context.conversation_memory {
@@ -2548,8 +3978,23 @@ fn append_tool_context(input: &mut String, tool_context: &ToolContext) {
             input.push('\n');
         }
     }
-}
 
+    if let Some(code_files) = &tool_context.code_files {
+        input.push_str("\nKod projektu XO, wybrane pliki tylko do odczytu:\n");
+
+        if code_files.is_empty() {
+            input.push_str("- Nie znaleziono pasujących plików kodu.\n");
+        } else {
+            for file in code_files {
+                input.push_str("\n--- ");
+                input.push_str(&file.path);
+                input.push_str(" ---\n");
+                input.push_str(&file.excerpt);
+                input.push('\n');
+            }
+        }
+    }
+}
 
 fn load_conversations(db: &Connection) -> Result<Vec<ConversationSummary>, String> {
     load_conversations_by_status(db, "active")
@@ -2574,6 +4019,7 @@ fn load_conversations_by_status(
               c.created_at,
               c.updated_at,
               c.status,
+              c.kind,
               (
                 SELECT COUNT(*)
                 FROM messages
@@ -2602,7 +4048,10 @@ fn load_conversations_by_status(
 }
 
 /// Znajduje istniejaca pusta aktywna rozmowe, aby frontend nie tworzyl wielu pustych czatow.
-fn load_empty_active_conversation(db: &Connection) -> Result<Option<ConversationSummary>, String> {
+fn load_empty_active_conversation(
+    db: &Connection,
+    kind: &str,
+) -> Result<Option<ConversationSummary>, String> {
     db.query_row(
         "
         SELECT
@@ -2611,17 +4060,19 @@ fn load_empty_active_conversation(db: &Connection) -> Result<Option<Conversation
           c.created_at,
           c.updated_at,
           c.status,
+          c.kind,
           0 AS message_count,
           NULL AS last_message
         FROM conversations c
         WHERE c.status = 'active'
+          AND c.kind = ?1
           AND NOT EXISTS (
             SELECT 1 FROM messages WHERE conversation_id = c.id
           )
         ORDER BY c.updated_at DESC
         LIMIT 1
         ",
-        [],
+        params![kind],
         map_conversation_summary,
     )
     .optional()
@@ -2640,6 +4091,7 @@ fn load_conversation(
           c.created_at,
           c.updated_at,
           c.status,
+          c.kind,
           (
             SELECT COUNT(*)
             FROM messages
@@ -2696,8 +4148,9 @@ fn map_conversation_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Convers
         created_at: row.get(2)?,
         updated_at: row.get(3)?,
         status: row.get(4)?,
-        message_count: row.get(5)?,
-        last_message: row.get(6)?,
+        kind: row.get(5)?,
+        message_count: row.get(6)?,
+        last_message: row.get(7)?,
     })
 }
 
@@ -3510,22 +4963,45 @@ fn normalize_for_memory_compare(value: &str) -> String {
 }
 /// funkcja przyjmuje prompt instrukcji i input wiadomosci do usera, nastepnie zwraca odpowiedz jako odpowiedz modelu lub tez error
 async fn request_openai_text(instructions: &str, input: &str) -> Result<String, String> {
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .map_err(|_| "Brakuje OPENAI_API_KEY w konfiguracji srodowiska.".to_string())?;
+    let api_key = load_openai_api_key()?;
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+    request_openai_text_with_model(&api_key, &model, instructions, input).await
+}
+
+/// Wysyła zadania kodowe do modelu zoptymalizowanego pod agentowe programowanie.
+async fn request_openai_code_text(instructions: &str, input: &str) -> Result<String, String> {
+    let api_key = load_openai_api_key()?;
+    let model = std::env::var("OPENAI_CODE_MODEL")
+        .or_else(|_| std::env::var("OPENAI_MODEL"))
+        .unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+    request_openai_text_with_model(&api_key, &model, instructions, input).await
+}
+
+/// Wykonuje wspólne żądanie do Responses API dla zwykłego chatu i agenta kodującego.
+async fn request_openai_text_with_model(
+    api_key: &str,
+    model: &str,
+    instructions: &str,
+    input: &str,
+) -> Result<String, String> {
     let request = OpenAIResponsesRequest {
-        model: &model,
+        model,
         instructions,
         input,
     };
 
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(OPENAI_REQUEST_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|error| format!("Nie udalo sie przygotowac klienta OpenAI API. {error}"))?;
+
+    let response = client
         .post(OPENAI_API_URL)
         .bearer_auth(api_key)
         .json(&request)
         .send()
         .await
-        .map_err(|error| format!("Nie udalo sie polaczyc z OpenAI API. {error}"))?;
+        .map_err(|error| format_openai_request_error(&error))?;
 
     let status = response.status();
 
@@ -3549,6 +5025,22 @@ async fn request_openai_text(instructions: &str, input: &str) -> Result<String, 
 
     extract_response_text(payload)
         .ok_or_else(|| "Model nie zwrocil tekstowej odpowiedzi.".to_string())
+}
+
+/// Zamienia techniczny błąd reqwest na komunikat wskazujący, że awaria dotyczy połączenia z OpenAI.
+fn format_openai_request_error(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        return format!(
+            "Nie udalo sie polaczyc z OpenAI API: przekroczono limit {} sekund oczekiwania na odpowiedz.",
+            OPENAI_REQUEST_TIMEOUT_SECONDS
+        );
+    }
+
+    if error.is_connect() {
+        return format!("Nie udalo sie polaczyc z OpenAI API: problem z siecia lub DNS. {error}");
+    }
+
+    format!("Nie udalo sie polaczyc z OpenAI API. {error}")
 }
 
 fn extract_response_text(payload: OpenAIResponsesResponse) -> Option<String> {
@@ -3620,9 +5112,30 @@ fn monotonic_nanos() -> u128 {
 }
 
 fn load_local_environment() {
-    let _ = dotenvy::from_filename("../.env.local");
-    let _ = dotenvy::from_filename(".env.local");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    if let Some(project_root) = manifest_dir.parent() {
+        let _ = dotenvy::from_path(project_root.join(".env.local"));
+        let _ = dotenvy::from_path(project_root.join(".env"));
+    }
+
+    let _ = dotenvy::from_path(manifest_dir.join(".env.local"));
+    let _ = dotenvy::from_path(manifest_dir.join(".env"));
     let _ = dotenvy::dotenv();
+}
+
+/// Odczytuje klucz OpenAI z lokalnego środowiska i pilnuje, żeby pusty sekret nie trafił do API.
+fn load_openai_api_key() -> Result<String, String> {
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .map_err(|_| "Brakuje OPENAI_API_KEY w konfiguracji srodowiska.".to_string())?
+        .trim()
+        .to_string();
+
+    if api_key.is_empty() {
+        return Err("OPENAI_API_KEY jest pusty w konfiguracji srodowiska.".to_string());
+    }
+
+    Ok(api_key)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3657,6 +5170,7 @@ pub fn run() {
             list_conversations,
             list_archived_conversations,
             create_conversation,
+            create_developer_conversation,
             archive_conversation,
             restore_conversation,
             delete_conversation,
@@ -3665,6 +5179,11 @@ pub fn run() {
             list_memory_records,
             create_memory_record,
             save_memory_suggestion,
+            propose_code_patch,
+            apply_code_patch,
+            send_developer_chat_message,
+            run_developer_build,
+            revert_code_patch,
             get_realtime_call_config,
             create_realtime_call,
             update_memory_record,

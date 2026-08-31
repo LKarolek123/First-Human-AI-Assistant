@@ -2229,6 +2229,232 @@ textarea {
   overflow: auto;
 }
 
+.developerPanel {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-height: 100vh;
+  padding: 24px;
+  overflow: auto;
+  background: #212121;
+  color: #ececf1;
+}
+
+.developerHeader {
+  display: grid;
+  gap: 8px;
+  max-width: 840px;
+}
+
+.developerHeader h2 {
+  margin: 0;
+  color: #f4f4f5;
+  font-size: 1.45rem;
+}
+
+.developerHeader p {
+  margin: 0;
+  color: #a6a6b3;
+  line-height: 1.45;
+}
+
+.developerForm,
+.developerResult {
+  display: grid;
+  gap: 12px;
+  max-width: 960px;
+  padding: 14px;
+  border: 1px solid #343437;
+  border-radius: 8px;
+  background: #202123;
+}
+
+.developerField {
+  display: grid;
+  gap: 8px;
+}
+
+.developerField span,
+.developerResultHeader strong,
+.developerFiles span {
+  color: #ececf1;
+  font-weight: 800;
+}
+
+.developerField textarea,
+.developerField input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #343437;
+  border-radius: 8px;
+  background: #171717;
+  color: #ececf1;
+  line-height: 1.5;
+}
+
+.developerField textarea {
+  min-height: 150px;
+  resize: vertical;
+}
+
+.developerField textarea:focus,
+.developerField input:focus {
+  border-color: #565660;
+  outline: 3px solid rgb(142 142 160 / 16%);
+}
+
+.developerToggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid #343437;
+  border-radius: 8px;
+  background: #171717;
+  color: #ececf1;
+}
+
+.developerToggle input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: #ececf1;
+}
+
+.developerToggle span {
+  display: grid;
+  gap: 4px;
+}
+
+.developerToggle small {
+  color: #a6a6b3;
+  line-height: 1.4;
+}
+
+.developerResultHeader {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.developerResultHeader time,
+.developerResult > p {
+  color: #a6a6b3;
+}
+
+.developerResultApplied {
+  border-color: #385344;
+  background: #1e2824;
+}
+
+.developerVerdictActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.developerVerdictActions button {
+  width: auto;
+}
+
+.developerVerdictNotice {
+  max-width: 960px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #385344;
+  border-radius: 8px;
+  background: #1e2824;
+  color: #d8f3e5;
+  font-weight: 750;
+}
+
+.developerCommandSuccess {
+  border-color: #385344;
+}
+
+.developerCommandFailed {
+  border-color: #6f3f49;
+  background: #2a2023;
+}
+
+.developerFiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.developerFiles code {
+  padding: 5px 8px;
+  border: 1px solid #343437;
+  border-radius: 999px;
+  background: #171717;
+  color: #d7d7df;
+  font-size: 0.78rem;
+}
+
+.developerAgentLog {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #343437;
+  border-radius: 8px;
+  background: #171717;
+}
+
+.developerAgentLog summary {
+  cursor: pointer;
+  color: #ececf1;
+  font-weight: 800;
+}
+
+.developerAgentSteps {
+  display: grid;
+  gap: 8px;
+}
+
+.developerAgentStep {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid #2f3033;
+  border-radius: 8px;
+  background: #202123;
+}
+
+.developerAgentStep strong {
+  color: #f4f4f5;
+  font-size: 0.86rem;
+}
+
+.developerAgentStep p {
+  margin: 0;
+  color: #a6a6b3;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.developerAgentStep span {
+  color: #ececf1;
+  font-weight: 750;
+}
+
+.developerProposalText {
+  max-height: 520px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid #343437;
+  border-radius: 8px;
+  background: #111112;
+  color: #ececf1;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .memoryField span,
 .pluginConfigField span,
 .voiceModelField span,
@@ -2512,6 +2738,66 @@ body {
   width: 22px;
   height: 22px;
   margin: 0;
+}
+
+.cameraSvgIcon {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.cameraRecordingPanel {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid #34383b;
+  border-radius: 8px;
+  background: #202426;
+  color: #ececf1;
+}
+
+.cameraRecordingPanel strong,
+.cameraRecordingPanel span {
+  display: block;
+}
+
+.cameraRecordingPanel strong {
+  font-size: 0.9rem;
+}
+
+.cameraRecordingPanel span {
+  color: #aeb4b8;
+  font-size: 0.78rem;
+}
+
+.cameraRecordingActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.cameraRecordingActions a {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #44484d;
+  border-radius: 999px;
+  background: #2a2d31;
+  color: #f2f2f3;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.cameraRecordingActions a:hover {
+  background: #34383d;
 }
 
 .toolPill {
@@ -2897,6 +3183,20 @@ body {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.conversationKindBadge {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid #464852;
+  border-radius: 6px;
+  color: #c9c9d4;
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.2;
+  vertical-align: 1px;
 }
 
 .conversationRail .conversationItem small {

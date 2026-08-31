@@ -1,5 +1,21 @@
 # XO Tool Planner Spec
 
+Zwróć wyłącznie JSON:
+
+```json
+{
+  "use_memory": boolean,
+  "inspect_code": boolean,
+  "check_email": boolean,
+  "check_calendar": boolean,
+  "modify_calendar": boolean,
+  "send_email": boolean,
+  "needs_clarification": boolean,
+  "clarification_question": string | null,
+  "reason": string | null
+}
+```
+
 ## Kluczowe Reguły Zależności
 
 - Jeśli `send_email=true`, ustaw też `check_email=true`.
@@ -24,6 +40,21 @@ Ustaw `true`, gdy użytkownik pyta o:
 - kontekst, który XO mogło zapisać wcześniej.
 
 Ustaw `false`, gdy wystarczy bieżąca wiadomość albo ogólna wiedza modelu.
+
+### `inspect_code=true`
+
+Ustaw `true`, gdy użytkownik pyta o:
+
+- kod aplikacji XO,
+- implementację funkcji,
+- naprawę błędu w repozytorium,
+- refaktor,
+- pliki projektu,
+- komponenty frontendowe,
+- funkcje backendowe,
+- dodanie nowej funkcji do aplikacji.
+
+Ustaw `false`, gdy pytanie dotyczy zwykłej rozmowy, pamięci, maila, kalendarza albo wiedzy ogólnej bez potrzeby czytania kodu.
 
 ### `check_email=true`
 
@@ -127,3 +158,14 @@ Jeśli plan narzędzi zawiera send_email=true albo modify_calendar=true, ale bac
 | 35 | Napisz do Piotra na Messengerze | false | false | false | false | false | true | Messenger nieobsługiwany |
 | 36 | Co to jest RAG? | false | false | false | false | false | false | wiedza ogólna |
 | 37 | Jak się masz? | false | false | false | false | false | false | small talk |
+
+## Dodatkowe testy dla `inspect_code`
+
+| # | Zdanie usera | inspect_code | Uzasadnienie |
+|---|---|---:|---|
+| 38 | Dodaj opcję rejestracji video z kamery | true | zmiana funkcji aplikacji wymaga kodu |
+| 39 | Sprawdź, gdzie budowany jest prompt do AI | true | pytanie o implementację w repo |
+| 40 | Czemu ta funkcja w Rust zwraca błąd typów? | true | debugowanie kodu |
+| 41 | Wyjaśnij mi, jak działa `map_conversation_summary` | true | pytanie o konkretną funkcję kodu |
+| 42 | Co mam dziś w kalendarzu? | false | pytanie o dane z kalendarza, nie o kod |
+| 43 | Co pamiętasz o projekcie XO? | false | pytanie o pamięć, nie o pliki repo |

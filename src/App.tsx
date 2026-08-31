@@ -6,7 +6,13 @@ import {
   type MemoryRecord,
   type MemorySuggestion,
   type MemorySuggestionAnalysis,
+  type CodePatchProposal,
+  type CodePatchApplyResult,
+  type DeveloperAgentStep,
+  type DeveloperCommandResult,
+  applyCodePatch,
   archiveConversation,
+  createDeveloperConversation,
   createMemoryRecord,
   deleteConversation,
   deleteMemoryRecord,
@@ -14,12 +20,17 @@ import {
   listArchivedConversations,
   listConversations,
   listMemoryRecords,
+  proposeCodePatch,
+  revertCodePatch,
+  runDeveloperBuild,
   restoreConversation,
   saveMemorySuggestion,
   saveVoiceCallHistory,
+  sendDeveloperChatMessage,
   sendChatMessage,
   updateMemoryRecord,
 } from './ai/openaiFeedback';
+import { listen } from '@tauri-apps/api/event';
 import {
   type CalendarEventSummary,
   type GmailMessageSummary,
@@ -43,6 +54,7 @@ import {
 } from './voice/useWhisperTranscription';
 import { createRealtimeCall, getRealtimeCallConfig } from './ai/realtime';
 import { createRealtimeOffer, RealtimeOffer } from './voice/realtimeConnection';
+import { useCameraRecording } from './vision/useCameraRecording';
 import { Memory } from './Memory';
 import { ChatInput } from './ChatInput';
 import { LandingPage } from './LandingPage';
@@ -106,11 +118,15 @@ const realtimeEffortOptions = [
 ] as const;
 
 type UiLanguage = 'pl' | 'en';
+type WorkspaceView = 'chat' | 'memory' | 'developer';
 
 const uiCopy = {
   pl: {
     plugins: 'Wtyczki',
     memory: 'Pamięć',
+    developer: 'Developer',
+    developerChat: 'Developer chat',
+    developerChatBadge: 'kod',
     chats: 'Chaty',
     archivedChats: 'Archiwalne chaty',
     archivedChatsHint: 'Pokaż ukryte rozmowy',
@@ -141,6 +157,7 @@ const uiCopy = {
     emptyChatTitle: 'Nowa rozmowa jest gotowa.',
     emptyChatBody: 'Wyślij wiadomość, aby rozpocząć.',
     thinking: 'myślę...',
+    developerThinking: 'Agent czyta kod i przygotowuje zmianę. Log pojawi się po zakończeniu operacji.',
     composerFooter: 'Dyktafon zamieni głos na tekst. Calling uruchamia rozmowę realtime.',
     activeVoiceCall: 'Aktywne połączenie głosowe',
     realtimeVoice: 'Głos realtime',
@@ -163,6 +180,12 @@ const uiCopy = {
     stopDictation: 'Zatrzymaj dyktafon',
     dictation: 'Dyktafon',
     calling: 'Calling',
+    camera: 'Kamera',
+    stopCamera: 'Zatrzymaj kamerę',
+    cameraRecording: 'Nagrywam obraz',
+    cameraReady: 'Nagranie z kamery jest gotowe',
+    cameraDownload: 'Pobierz nagranie',
+    cameraUnsupported: 'Ta przeglądarka nie udostępnia nagrywania obrazu z kamery.',
     unsupportedBrowser: 'Ta przeglądarka nie udostępnia nagrywania audio przez MediaRecorder.',
     loadingWhisperPlaceholder: 'Ładuję model Whisper. Pierwszy raz może potrwać dłużej.',
     recordingPlaceholder: 'Mów po polsku. Po 3 sekundach ciszy XO sam zakończy nagranie i wyśle wiadomość.',
@@ -213,6 +236,35 @@ const uiCopy = {
     clientSecretStored: 'Client Secret jest już zapisany lokalnie.',
     backendKeepsSecret: 'Po zapisaniu backend trzyma sekret w systemowym sejfie.',
     saveSettings: 'Zapisz ustawienia',
+    developerTitle: 'Tryb ulepszania XO',
+    developerBody: 'Opisz zmianę w aplikacji. XO przeczyta pasujące pliki i przygotuje propozycję patcha bez zapisywania kodu.',
+    developerTaskLabel: 'Co chcesz zmienić?',
+    developerTaskPlaceholder: 'Np. dodaj obsługę zapisu nagrań kamery do lokalnego pliku',
+    askBeforeCodeChange: 'Zapytaj przed dodaniem',
+    askBeforeCodeChangeHint: 'Gdy coś jest niejasne, XO najpierw zada pytanie zamiast od razu zmieniać kod.',
+    questionPreferenceLabel: 'Preferencje doprecyzowań',
+    questionPreferencePlaceholder: 'Np. pytaj mnie tylko o ważne decyzje działania funkcji',
+    clarificationNeeded: 'XO potrzebuje doprecyzowania',
+    proposePatch: 'Zaproponuj patch',
+    applyPatchDirectly: 'Wprowadź zmianę w kodzie',
+    runBuild: 'Uruchom build',
+    rejectCodeChange: 'Odrzuć zmiany',
+    approveCodeChange: 'Zatwierdź',
+    proposingPatch: 'Przygotowuję propozycję',
+    applyingPatch: 'Wprowadzam zmianę',
+    runningBuild: 'Uruchamiam build',
+    rejectingCodeChange: 'Odrzucam zmiany',
+    inspectedFiles: 'Sprawdzone pliki',
+    changedFiles: 'Zmienione pliki',
+    agentWorkLog: 'Przebieg pracy agenta',
+    agentStepReason: 'Powód',
+    agentStepResult: 'Wynik',
+    patchProposal: 'Propozycja zmian',
+    appliedPatch: 'Zastosowany patch',
+    buildResult: 'Wynik komendy',
+    codeChangeApproved: 'Zmiany zatwierdzone. Możesz je teraz zostawić albo zacommitować poza aplikacją.',
+    codeChangeRejected: 'Zmiany z ostatniego patcha zostały odrzucone.',
+    noPatchProposal: 'Nie ma jeszcze propozycji.',
     memoryCategory_user_fact: 'Fakt o użytkowniku',
     memoryCategory_preference: 'Preferencja',
     memoryCategory_project: 'Projekt',
@@ -242,6 +294,9 @@ const uiCopy = {
   en: {
     plugins: 'Plugins',
     memory: 'Memory',
+    developer: 'Developer',
+    developerChat: 'Developer chat',
+    developerChatBadge: 'code',
     chats: 'Chats',
     archivedChats: 'Archived chats',
     archivedChatsHint: 'Show hidden conversations',
@@ -272,6 +327,7 @@ const uiCopy = {
     emptyChatTitle: 'New conversation is ready.',
     emptyChatBody: 'Send a message to start.',
     thinking: 'thinking...',
+    developerThinking: 'Agent is reading code and preparing a change. The log will appear after the operation finishes.',
     composerFooter: 'Dictation turns voice into text. Calling starts a realtime conversation.',
     activeVoiceCall: 'Active voice connection',
     realtimeVoice: 'Realtime voice',
@@ -294,6 +350,12 @@ const uiCopy = {
     stopDictation: 'Stop dictation',
     dictation: 'Dictation',
     calling: 'Calling',
+    camera: 'Camera',
+    stopCamera: 'Stop camera',
+    cameraRecording: 'Recording video',
+    cameraReady: 'Camera recording is ready',
+    cameraDownload: 'Download recording',
+    cameraUnsupported: 'This browser does not expose camera video recording.',
     unsupportedBrowser: 'This browser does not expose audio recording through MediaRecorder.',
     loadingWhisperPlaceholder: 'Loading the Whisper model. The first run may take longer.',
     recordingPlaceholder: 'Speak in English. After 3 seconds of silence XO will finish recording and send the message.',
@@ -344,6 +406,35 @@ const uiCopy = {
     clientSecretStored: 'Client Secret is already stored locally.',
     backendKeepsSecret: 'After saving, the backend keeps the secret in the system vault.',
     saveSettings: 'Save settings',
+    developerTitle: 'XO self-improvement mode',
+    developerBody: 'Describe an app change. XO will read matching files and prepare a patch proposal without writing code.',
+    developerTaskLabel: 'What should change?',
+    developerTaskPlaceholder: 'E.g. add saving camera recordings to a local file',
+    askBeforeCodeChange: 'Ask before adding',
+    askBeforeCodeChangeHint: 'When something is unclear, XO will ask first instead of changing code immediately.',
+    questionPreferenceLabel: 'Clarification preferences',
+    questionPreferencePlaceholder: 'E.g. ask me only about important behavior decisions',
+    clarificationNeeded: 'XO needs clarification',
+    proposePatch: 'Propose patch',
+    applyPatchDirectly: 'Apply code change',
+    runBuild: 'Run build',
+    rejectCodeChange: 'Reject changes',
+    approveCodeChange: 'Approve',
+    proposingPatch: 'Preparing proposal',
+    applyingPatch: 'Applying change',
+    runningBuild: 'Running build',
+    rejectingCodeChange: 'Rejecting changes',
+    inspectedFiles: 'Inspected files',
+    changedFiles: 'Changed files',
+    agentWorkLog: 'Agent work log',
+    agentStepReason: 'Reason',
+    agentStepResult: 'Result',
+    patchProposal: 'Change proposal',
+    appliedPatch: 'Applied patch',
+    buildResult: 'Command result',
+    codeChangeApproved: 'Changes approved. You can keep them or commit them outside the app.',
+    codeChangeRejected: 'Changes from the last patch were rejected.',
+    noPatchProposal: 'No proposal yet.',
     memoryCategory_user_fact: 'User fact',
     memoryCategory_preference: 'Preference',
     memoryCategory_project: 'Project',
@@ -432,6 +523,14 @@ export function App() {
     stopRecording,
     transcript,
   } = useWhisperTranscription();
+  const {
+    error: cameraError,
+    isSupported: isCameraSupported,
+    recordingState: cameraRecordingState,
+    recordingUrl: cameraRecordingUrl,
+    startCameraRecording,
+    stopCameraRecording,
+  } = useCameraRecording();
 
   const [typedPrompt, setTypedPrompt] = useState('');
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -452,7 +551,7 @@ export function App() {
   const [googleClientSecret, setGoogleClientSecret] = useState('');
   const [hasGoogleClientId, setHasGoogleClientId] = useState(false);
   const [hasGoogleClientSecret, setHasGoogleClientSecret] = useState(false);
-  const [activeWorkspaceView, setActiveWorkspaceView] = useState<'chat' | 'memory'>('chat');
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState<WorkspaceView>('chat');
   const [isArchiveViewOpen, setIsArchiveViewOpen] = useState(false);
   const [conversationMenu, setConversationMenu] = useState<ConversationMenuState>(null);
   const [deleteConversationDialog, setDeleteConversationDialog] =
@@ -481,6 +580,20 @@ export function App() {
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryNotice, setMemoryNotice] = useState<string | null>(null);
   const [memoryState, setMemoryState] = useState<'idle' | 'saving' | 'deleting'>('idle');
+  const [developerTask, setDeveloperTask] = useState('');
+  const [developerAskBeforeChange, setDeveloperAskBeforeChange] = useState(true);
+  const [developerQuestionPreference, setDeveloperQuestionPreference] = useState(
+    'Pytaj mnie tylko o ważne decyzje dotyczące funkcjonalności albo zasad działania.',
+  );
+  const [developerProposal, setDeveloperProposal] = useState<CodePatchProposal | null>(null);
+  const [developerApplyResult, setDeveloperApplyResult] = useState<CodePatchApplyResult | null>(null);
+  const [liveDeveloperAgentSteps, setLiveDeveloperAgentSteps] = useState<DeveloperAgentStep[]>([]);
+  const [developerCommandResult, setDeveloperCommandResult] =
+    useState<DeveloperCommandResult | null>(null);
+  const [developerVerdict, setDeveloperVerdict] = useState<'approved' | 'rejected' | null>(null);
+  const [developerError, setDeveloperError] = useState<string | null>(null);
+  const [developerState, setDeveloperState] =
+    useState<'idle' | 'proposing' | 'applying' | 'building' | 'rejecting'>('idle');
   const [chatMemorySuggestions, setChatMemorySuggestions] = useState<
     Record<string, ChatMemorySuggestion[]>
   >({});
@@ -497,6 +610,7 @@ export function App() {
   const realtimeOfferRef = useRef<RealtimeOffer | null>(null);
   const realtimeRemoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimeAssistantLineIdsRef = useRef<Record<string, string>>({});
+  const activeDeveloperRunIdRef = useRef<string | null>(null);
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
@@ -670,6 +784,32 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+
+    const unlistenPromise = listen<{ run_id: string; step: DeveloperAgentStep }>(
+      'developer-agent-step',
+      (event) => {
+        if (!isMounted || event.payload.run_id !== activeDeveloperRunIdRef.current) {
+          return;
+        }
+
+        setLiveDeveloperAgentSteps((steps) => {
+          if (steps.some((step) => step.step === event.payload.step.step)) {
+            return steps;
+          }
+
+          return [...steps, event.payload.step];
+        });
+      },
+    );
+
+    return () => {
+      isMounted = false;
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
     if (pluginState !== 'connecting' || !connectingPlugin) {
       return;
     }
@@ -748,10 +888,26 @@ export function App() {
 
 
     try {
-      const response = await sendChatMessage({
-        conversationId: activeConversationId,
-        input,
-      });
+      const isDeveloperConversation = activeConversation?.kind === 'developer';
+      const developerRunId = isDeveloperConversation ? crypto.randomUUID() : null;
+
+      if (developerRunId) {
+        activeDeveloperRunIdRef.current = developerRunId;
+        setLiveDeveloperAgentSteps([]);
+      }
+
+      const response = isDeveloperConversation
+        ? await sendDeveloperChatMessage({
+            conversationId: activeConversationId,
+            input,
+            askBeforeChange: developerAskBeforeChange,
+            questionPreference: developerQuestionPreference,
+            developerRunId: developerRunId ?? undefined,
+          })
+        : await sendChatMessage({
+            conversationId: activeConversationId,
+            input,
+          });
 
       setActiveConversationId(response.conversation.id);
 
@@ -810,9 +966,16 @@ export function App() {
 
       return false;
     } finally {
+      activeDeveloperRunIdRef.current = null;
       setChatState('idle');
     }
-  }, [activeConversationId, copy.conversationRestoredNotice]);
+  }, [
+    activeConversation?.kind,
+    activeConversationId,
+    copy.conversationRestoredNotice,
+    developerAskBeforeChange,
+    developerQuestionPreference,
+  ]);
 
   useEffect(() => {
     const voiceInput = transcript.trim();
@@ -846,7 +1009,7 @@ export function App() {
 
   function handleNewConversation() {
     const existingEmptyConversation = conversations.find(
-      (conversation) => conversation.message_count === 0,
+      (conversation) => conversation.kind === 'chat' && conversation.message_count === 0,
     );
 
     if (existingEmptyConversation) {
@@ -865,6 +1028,32 @@ export function App() {
     setMessages([]);
     setTypedPrompt('');
     setChatError(null);
+  }
+
+  // Otwiera pusty developer-chat albo tworzy nowy, żeby pole wpisywania działało jak rozmowa z agentem kodu.
+  async function handleDeveloperConversation() {
+    const existingEmptyDeveloperConversation = conversations.find(
+      (conversation) => conversation.kind === 'developer' && conversation.message_count === 0,
+    );
+
+    if (existingEmptyDeveloperConversation) {
+      setIsArchiveViewOpen(false);
+      setActiveWorkspaceView('chat');
+      setActiveConversationId(existingEmptyDeveloperConversation.id);
+      return;
+    }
+
+    try {
+      const conversation = await createDeveloperConversation();
+      setConversations((currentConversations) => upsertConversation(currentConversations, conversation));
+      setIsArchiveViewOpen(false);
+      setActiveWorkspaceView('chat');
+      setActiveConversationId(conversation.id);
+      setMessages([]);
+      setChatError(null);
+    } catch (error) {
+      setChatError(getErrorMessage(error));
+    }
   }
 
   async function refreshConversationLists() {
@@ -1011,6 +1200,16 @@ export function App() {
 
     autoSubmittedTranscriptRef.current = '';
     void startRecording();
+  }
+
+  // Przełącza lokalne nagrywanie kamery bez wysyłania obrazu poza frontend aplikacji.
+  function handleCameraButton() {
+    if (cameraRecordingState === 'recording' || cameraRecordingState === 'starting') {
+      stopCameraRecording();
+      return;
+    }
+
+    void startCameraRecording();
   }
 
   function handleResetTranscript() {
@@ -1592,6 +1791,140 @@ export function App() {
     setMemoryContent('');
   }
 
+  // Prosi backend o propozycję patcha, ale nie stosuje żadnych zmian w plikach projektu.
+  async function handleDeveloperProposalSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const task = developerTask.trim();
+
+    if (!task) {
+      setDeveloperError('Opisz zmianę, którą XO ma zaproponować.');
+      return;
+    }
+
+    setDeveloperError(null);
+    setDeveloperProposal(null);
+    setDeveloperApplyResult(null);
+    setLiveDeveloperAgentSteps([]);
+    setDeveloperCommandResult(null);
+    setDeveloperVerdict(null);
+    setDeveloperState('proposing');
+
+    try {
+      const proposal = await proposeCodePatch(task);
+      setDeveloperProposal(proposal);
+    } catch (proposalError) {
+      setDeveloperError(getErrorMessage(proposalError));
+    } finally {
+      setDeveloperState('idle');
+    }
+  }
+
+  // Pozwala agentowi bezpośrednio zastosować wygenerowany patch w katalogu projektu XO.
+  async function handleDeveloperApplySubmit() {
+    const task = developerTask.trim();
+
+    if (!task) {
+      setDeveloperError('Opisz zmianę, którą XO ma wprowadzić w kodzie.');
+      return;
+    }
+
+    setDeveloperError(null);
+    setDeveloperProposal(null);
+    setDeveloperApplyResult(null);
+    setLiveDeveloperAgentSteps([]);
+    setDeveloperCommandResult(null);
+    setDeveloperVerdict(null);
+    setDeveloperState('applying');
+
+    try {
+      const developerRunId = crypto.randomUUID();
+      activeDeveloperRunIdRef.current = developerRunId;
+      const result = await applyCodePatch(task, {
+        askBeforeChange: developerAskBeforeChange,
+        questionPreference: developerQuestionPreference,
+        developerRunId,
+      });
+      setDeveloperApplyResult(result);
+    } catch (applyError) {
+      setDeveloperError(getErrorMessage(applyError));
+    } finally {
+      activeDeveloperRunIdRef.current = null;
+      setDeveloperState('idle');
+    }
+  }
+
+  // Uruchamia frontendowy build projektu po zmianie kodu i pokazuje pełny wynik w panelu Developer.
+  async function handleDeveloperBuild() {
+    setDeveloperError(null);
+    setDeveloperCommandResult(null);
+    setDeveloperState('building');
+
+    try {
+      const result = await runDeveloperBuild();
+      setDeveloperCommandResult(result);
+    } catch (buildError) {
+      setDeveloperError(getErrorMessage(buildError));
+    } finally {
+      setDeveloperState('idle');
+    }
+  }
+
+  // Odrzuca ostatnio zastosowany patch przez git apply --reverse, bez resetowania innych zmian użytkownika.
+  async function handleDeveloperRejectChanges() {
+    if (!developerApplyResult) {
+      setDeveloperError('Brak zastosowanego patcha do odrzucenia.');
+      return;
+    }
+
+    setDeveloperError(null);
+    setDeveloperCommandResult(null);
+    setDeveloperState('rejecting');
+
+    try {
+      const result = await revertCodePatch(developerApplyResult.patch);
+      setDeveloperCommandResult(result);
+      setDeveloperVerdict('rejected');
+      setDeveloperApplyResult(null);
+    } catch (rejectError) {
+      setDeveloperError(getErrorMessage(rejectError));
+    } finally {
+      setDeveloperState('idle');
+    }
+  }
+
+  // Zapisuje werdykt użytkownika w UI: zmiany zostają w working tree, ale bez automatycznego commita.
+  function handleDeveloperApproveChanges() {
+    setDeveloperError(null);
+    setDeveloperVerdict('approved');
+  }
+
+  function renderDeveloperAgentSteps(steps: DeveloperAgentStep[]) {
+    if (steps.length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="developerAgentSteps">
+        {steps.map((step) => (
+          <article className="developerAgentStep" key={`${step.step}-${step.action}`}>
+            <strong>
+              {step.step}. {step.action}
+            </strong>
+            {step.reason && (
+              <p>
+                <span>{copy.agentStepReason}:</span> {step.reason}
+              </p>
+            )}
+            <p>
+              <span>{copy.agentStepResult}:</span> {step.result}
+            </p>
+          </article>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <main className="shell">
       <section className="chatPanel" aria-labelledby="assistant-heading">
@@ -1611,6 +1944,7 @@ export function App() {
             setMessages([]);
           }}
           onNewConversation={handleNewConversation}
+          onDeveloperConversation={() => void handleDeveloperConversation()}
           onOpenPlugins={() => setIsPluginMenuOpen(true)}
           onWorkspaceViewChange={setActiveWorkspaceView}
           onArchiveViewOpen={() => setIsArchiveViewOpen(true)}
@@ -1917,7 +2251,18 @@ export function App() {
             {chatState === 'loading' && (
               <article className="messageBubble messageBubbleBusy">
                 <strong>Assistant</strong>
-                <p>mysle...</p>
+                <p>
+                  {activeConversation?.kind === 'developer'
+                    ? copy.developerThinking
+                    : copy.thinking}
+                </p>
+                {activeConversation?.kind === 'developer' &&
+                  liveDeveloperAgentSteps.length > 0 && (
+                    <details className="developerAgentLog" open>
+                      <summary>{copy.agentWorkLog}</summary>
+                      {renderDeveloperAgentSteps(liveDeveloperAgentSteps)}
+                    </details>
+                  )}
               </article>
             )}
           </div>
@@ -1951,6 +2296,11 @@ export function App() {
             onVoiceModelMenuToggle={() => setIsVoiceModelMenuOpen((current) => !current)}
             onVoiceModelMenuClose={() => setIsVoiceModelMenuOpen(false)}
             onVoiceButton={handleVoiceButton}
+            cameraError={cameraError}
+            cameraRecordingState={cameraRecordingState}
+            cameraRecordingUrl={cameraRecordingUrl}
+            isCameraSupported={isCameraSupported}
+            onCameraButton={handleCameraButton}
             voiceCallStatus={voiceCallStatus}
             onVoiceCallToggle={handleVoiceCallToggle}
             footerText={copy.composerFooter}
@@ -2032,7 +2382,7 @@ export function App() {
             </div>
           )}
           </ChatSection>
-        ) : (
+        ) : activeWorkspaceView === 'memory' ? (
           <Memory
             copy={copy}
             memoryAspects={localizedMemoryAspects}
@@ -2056,6 +2406,206 @@ export function App() {
             getMemorySourceLabel={getMemorySourceLabel}
             formatDateTime={formatDateTime}
           />
+        ) : (
+          <section className="developerPanel" aria-labelledby="developer-heading">
+            <div className="developerHeader">
+              <p className="eyebrow">{copy.developer}</p>
+              <h2 id="developer-heading">{copy.developerTitle}</h2>
+              <p>{copy.developerBody}</p>
+            </div>
+
+            <form className="developerForm" onSubmit={handleDeveloperProposalSubmit}>
+              <label className="developerField">
+                <span>{copy.developerTaskLabel}</span>
+                <textarea
+                  value={developerTask}
+                  onChange={(event) => setDeveloperTask(event.target.value)}
+                  placeholder={copy.developerTaskPlaceholder}
+                  rows={5}
+                />
+              </label>
+              <label className="developerToggle">
+                <input
+                  type="checkbox"
+                  checked={developerAskBeforeChange}
+                  onChange={(event) => setDeveloperAskBeforeChange(event.target.checked)}
+                />
+                <span>
+                  <strong>{copy.askBeforeCodeChange}</strong>
+                  <small>{copy.askBeforeCodeChangeHint}</small>
+                </span>
+              </label>
+              {developerAskBeforeChange && (
+                <label className="developerField">
+                  <span>{copy.questionPreferenceLabel}</span>
+                  <input
+                    type="text"
+                    value={developerQuestionPreference}
+                    onChange={(event) => setDeveloperQuestionPreference(event.target.value)}
+                    placeholder={copy.questionPreferencePlaceholder}
+                  />
+                </label>
+              )}
+              <button
+                className="primaryButton"
+                type="submit"
+                disabled={developerState !== 'idle'}
+              >
+                {developerState === 'proposing' ? copy.proposingPatch : copy.proposePatch}
+              </button>
+              <button
+                className="secondaryButton"
+                type="button"
+                onClick={() => void handleDeveloperApplySubmit()}
+                disabled={developerState !== 'idle'}
+              >
+                {developerState === 'applying' ? copy.applyingPatch : copy.applyPatchDirectly}
+              </button>
+            </form>
+
+            {developerError && <p className="voiceError">{developerError}</p>}
+
+            {developerState === 'applying' && liveDeveloperAgentSteps.length > 0 && (
+              <div className="developerResult developerResultApplied">
+                <div className="developerResultHeader">
+                  <strong>{copy.agentWorkLog}</strong>
+                </div>
+                {renderDeveloperAgentSteps(liveDeveloperAgentSteps)}
+              </div>
+            )}
+
+            {developerApplyResult && (
+              <div className="developerResult developerResultApplied">
+                <div className="developerResultHeader">
+                  <strong>
+                    {developerApplyResult.needs_clarification
+                      ? copy.clarificationNeeded
+                      : copy.appliedPatch}
+                  </strong>
+                  <time dateTime={new Date(developerApplyResult.created_at * 1000).toISOString()}>
+                    {formatDateTime(developerApplyResult.created_at)}
+                  </time>
+                </div>
+                {developerApplyResult.needs_clarification ? (
+                  <>
+                    <p>{developerApplyResult.clarification_question}</p>
+                    <details className="developerAgentLog">
+                      <summary>{copy.agentWorkLog}</summary>
+                      {renderDeveloperAgentSteps(developerApplyResult.agent_steps)}
+                    </details>
+                  </>
+                ) : (
+                  <>
+                    <div className="developerFiles">
+                      <span>{copy.changedFiles}</span>
+                      {developerApplyResult.changed_files.map((file) => (
+                        <code key={file}>{file}</code>
+                      ))}
+                    </div>
+                    <div className="developerFiles">
+                      <span>{copy.inspectedFiles}</span>
+                      {developerApplyResult.inspected_files.map((file) => (
+                        <code key={file}>{file}</code>
+                      ))}
+                    </div>
+                    <details className="developerAgentLog">
+                      <summary>{copy.agentWorkLog}</summary>
+                      {renderDeveloperAgentSteps(developerApplyResult.agent_steps)}
+                    </details>
+                    <div className="developerVerdictActions">
+                      <button
+                        className="primaryButton"
+                        type="button"
+                        onClick={() => void handleDeveloperBuild()}
+                        disabled={developerState !== 'idle'}
+                      >
+                        {developerState === 'building' ? copy.runningBuild : copy.runBuild}
+                      </button>
+                      <button
+                        className="secondaryButton"
+                        type="button"
+                        onClick={handleDeveloperApproveChanges}
+                        disabled={developerState !== 'idle'}
+                      >
+                        {copy.approveCodeChange}
+                      </button>
+                      <button
+                        className="conversationDialogDangerButton"
+                        type="button"
+                        onClick={() => void handleDeveloperRejectChanges()}
+                        disabled={developerState !== 'idle'}
+                      >
+                        {developerState === 'rejecting'
+                          ? copy.rejectingCodeChange
+                          : copy.rejectCodeChange}
+                      </button>
+                    </div>
+                    <pre className="developerProposalText">{developerApplyResult.patch}</pre>
+                  </>
+                )}
+              </div>
+            )}
+
+            {developerVerdict && (
+              <p className="developerVerdictNotice">
+                {developerVerdict === 'approved'
+                  ? copy.codeChangeApproved
+                  : copy.codeChangeRejected}
+              </p>
+            )}
+
+            {developerCommandResult && (
+              <div
+                className={
+                  developerCommandResult.success
+                    ? 'developerResult developerCommandSuccess'
+                    : 'developerResult developerCommandFailed'
+                }
+              >
+                <div className="developerResultHeader">
+                  <strong>{copy.buildResult}</strong>
+                  <time dateTime={new Date(developerCommandResult.created_at * 1000).toISOString()}>
+                    {formatDateTime(developerCommandResult.created_at)}
+                  </time>
+                </div>
+                <code>{developerCommandResult.command}</code>
+                <pre className="developerProposalText">
+                  {[developerCommandResult.stdout, developerCommandResult.stderr]
+                    .filter(Boolean)
+                    .join('\n')}
+                </pre>
+              </div>
+            )}
+
+            <div className="developerResult">
+              <div className="developerResultHeader">
+                <strong>{copy.patchProposal}</strong>
+                {developerProposal && (
+                  <time dateTime={new Date(developerProposal.created_at * 1000).toISOString()}>
+                    {formatDateTime(developerProposal.created_at)}
+                  </time>
+                )}
+              </div>
+
+              {developerProposal ? (
+                <>
+                  <div className="developerFiles">
+                    <span>{copy.inspectedFiles}</span>
+                    {developerProposal.inspected_files.length > 0 ? (
+                      developerProposal.inspected_files.map((file) => (
+                        <code key={file}>{file}</code>
+                      ))
+                    ) : (
+                      <code>brak</code>
+                    )}
+                  </div>
+                  <pre className="developerProposalText">{developerProposal.proposal}</pre>
+                </>
+              ) : (
+                <p>{copy.noPatchProposal}</p>
+              )}
+            </div>
+          </section>
         )}
       </section>
 
@@ -2335,13 +2885,17 @@ function getMemorySourceLabel(record: MemoryRecord) {
     return 'Kalendarz';
   }
 
+  if (record.source_kind === 'camera_recording') {
+    return 'Nagranie kamery';
+  }
+
   if (record.source_kind === 'conversation') {
     return record.source_conversation_id
       ? `Rozmowa: ${record.source_conversation_id}`
       : 'Rozmowa';
   }
 
-  return 'Dodane przez uzytkownika';
+  return 'Dodane przez użytkownika';
 }
 
 function formatDateTime(timestamp: number) {
