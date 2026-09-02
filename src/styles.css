@@ -1969,6 +1969,25 @@ textarea {
   font-size: 0.86rem;
 }
 
+.stopGeneratingButton {
+  min-height: 32px;
+  width: fit-content;
+  margin-top: 10px;
+  padding: 0 12px;
+  border: 1px solid #565660;
+  border-radius: 999px;
+  background: #2b2c31;
+  color: #f1f1f4;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.stopGeneratingButton:hover {
+  border-color: #6b6d78;
+  background: #383941;
+}
+
 .promptForm {
   position: sticky;
   bottom: 0;

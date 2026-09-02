@@ -5,6 +5,7 @@ use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -12,13 +13,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
 const OPENAI_REALTIME_CALLS_URL: &str = "https://api.openai.com/v1/realtime/calls";
 const DEFAULT_MODEL: &str = "gpt-4.1-mini";
-const OPENAI_REQUEST_TIMEOUT_SECONDS: u64 = 90;
+const OPENAI_REQUEST_TIMEOUT_SECONDS: u64 = 240;
 
 const CHAT_INSTRUCTIONS: &str = "Jestes XO, spokojnym asystentem Human First. Odpowiadaj po polsku, konkretnie i zyczliwie. 
 Odpowiadaj na pytania w jezyku polskim, chyba ze uzytkownik rozpocznie z toba konwersacje w jezyku angielskim - wtedy odpowiadaj po angielsku. 
@@ -79,14 +80,19 @@ Nie opakowuj odpowiedzi w markdown i nie dodawaj komentarza poza diffem. \
 Patch musi dotyczyc tylko plikow widocznych w dostarczonym kontekście kodu. \
 Nie modyfikuj sekretow, plikow .env, .git, build outputow ani zaleznosci.";
 const CODE_AGENT_INSTRUCTIONS: &str = "Jestes lokalnym agentem kodujacym XO sterowanym przez bezpieczne akcje JSON. \
-Nie pisz zwyklej odpowiedzi. W kazdym kroku zwroc wylacznie poprawny JSON z jedna akcja. \
+Nie pisz zwyklej odpowiedzi. W kazdym kroku zwroc dokladnie jeden obiekt JSON z jedna akcja. \
+Nie dodawaj markdown, komentarzy, wyjasnien, tekstu przed JSON-em, tekstu po JSON-ie ani drugiego obiektu JSON. \
 Dostepne akcje: \
+{\"action\":\"search_code\",\"query\":\"szukana fraza albo nazwa funkcji\",\"reason\":\"czego szukasz\"}, \
 {\"action\":\"read_file\",\"path\":\"src/App.tsx\",\"reason\":\"dlaczego ten plik\"}, \
 {\"action\":\"apply_patch\",\"patch\":\"unified diff\",\"reason\":\"co zmienia patch\"}, \
 {\"action\":\"run_build\",\"reason\":\"dlaczego trzeba uruchomic build\"}, \
+{\"action\":\"replace_text\",\"path\":\"src/App.tsx\",\"find\":\"dokladny istniejacy fragment\",\"replace\":\"nowy fragment\",\"reason\":\"co zmieniasz\"}, \
 {\"action\":\"clarify\",\"message\":\"pytanie do uzytkownika\"}, \
 {\"action\":\"finish\",\"message\":\"podsumowanie dla uzytkownika\"}. \
-Czytaj pliki iteracyjnie i pros tylko o pliki z indeksu projektu. \
+Najpierw uzywaj search_code, gdy nie wiesz jeszcze, ktory plik przeczytac. \
+W search_code unikaj zbyt ogolnych fraz jak title, button, state albo value; szukaj nazw funkcji, etykiet UI, typow, komend Tauri albo fragmentow tekstu z zadania. \
+Czytaj pliki iteracyjnie i pros tylko o pliki z indeksu projektu albo wynikow search_code. \
 Patch musi byc poprawnym unified diffem w formacie git i dotyczyc tylko przeczytanych plikow. \
 Uzywaj clarify tylko wtedy, gdy bez odpowiedzi uzytkownika nie da sie bezpiecznie okreslic zachowania funkcji, zakresu danych, skutkow ubocznych, prywatnosci albo operacji destrukcyjnej. \
 Nie pytaj o drobne decyzje implementacyjne ani UI, takie jak polozenie przycisku, wariant tekstu, nazwy zmiennych, prosty layout czy styl, jesli mozna zastosowac spojny wzorzec z istniejacej aplikacji. \
@@ -98,6 +104,7 @@ Nie uruchamiaj dowolnych komend; jedyna dozwolona akcja testowa to run_build.";
 struct AppState {
     db: Mutex<Connection>,
     pending_google_calendar_oauth: Mutex<Option<PendingGoogleOAuth>>,
+    cancelled_chat_requests: Mutex<HashSet<String>>,
 }
 
 struct PendingGoogleOAuth {
@@ -386,8 +393,11 @@ struct DeveloperPatchContext {
 struct DeveloperAgentAction {
     action: String,
     path: Option<String>,
+    query: Option<String>,
     patch: Option<String>,
     message: Option<String>,
+    find: Option<String>,
+    replace: Option<String>,
     reason: Option<String>,
 }
 
@@ -1092,6 +1102,8 @@ async fn apply_code_patch(
         None,
         developer_run_id,
         Some(&app),
+        None,
+        None,
     )
     .await
 }
@@ -1104,6 +1116,8 @@ async fn build_and_apply_code_patch(
     developer_context: Option<&DeveloperPatchContext>,
     developer_run_id: Option<String>,
     app: Option<&AppHandle>,
+    cancellation_state: Option<&State<'_, AppState>>,
+    request_id: Option<&str>,
 ) -> Result<CodePatchApplyResult, String> {
     run_codex_api_agent(
         task,
@@ -1112,6 +1126,8 @@ async fn build_and_apply_code_patch(
         developer_context,
         developer_run_id,
         app,
+        cancellation_state,
+        request_id,
     )
     .await
 }
@@ -1124,15 +1140,40 @@ async fn send_developer_chat_message(
     ask_before_change: Option<bool>,
     question_preference: Option<String>,
     developer_run_id: Option<String>,
+    request_id: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<ChatResponse, String> {
+    let command_started_at = Instant::now();
+    let developer_run_id_for_logs = developer_run_id
+        .clone()
+        .unwrap_or_else(|| "missing-run-id".to_string());
+    log::debug!(
+        "send_developer_chat_message started: run_id={}, request_id={:?}, has_conversation_id={}, input_chars={}",
+        developer_run_id_for_logs,
+        request_id,
+        conversation_id.is_some(),
+        input.chars().count()
+    );
+
+    emit_developer_agent_step(
+        Some(&app),
+        &developer_run_id_for_logs,
+        developer_agent_telemetry_step(
+            -8,
+            "command_started",
+            command_started_at,
+            "Backend odebrał komendę send_developer_chat_message.",
+        ),
+    );
+
     let input = input.trim().to_string();
 
     if input.is_empty() {
         return Err("Opisz zmianę, którą XO ma wprowadzić w kodzie.".to_string());
     }
 
+    let conversation_started_at = Instant::now();
     let (conversation_id, user_message, restored_from_archive) = {
         let db = state
             .db
@@ -1145,6 +1186,31 @@ async fn send_developer_chat_message(
 
         (conversation_id, user_message, restored_from_archive)
     };
+    log::debug!(
+        "send_developer_chat_message conversation saved: run_id={}, conversation_id={}, elapsed_ms={}",
+        developer_run_id_for_logs,
+        conversation_id,
+        elapsed_ms(conversation_started_at)
+    );
+    emit_developer_agent_step(
+        Some(&app),
+        &developer_run_id_for_logs,
+        developer_agent_telemetry_step(
+            -7,
+            "conversation_saved",
+            command_started_at,
+            &format!(
+                "Zapisano wiadomość użytkownika i przygotowano developer chat w {} ms.",
+                elapsed_ms(conversation_started_at)
+            ),
+        ),
+    );
+
+    if consume_cancelled_chat_request(&state, request_id.as_deref())? {
+        return Err("Generowanie odpowiedzi zostalo zatrzymane.".to_string());
+    }
+
+    let context_started_at = Instant::now();
     let developer_context = {
         let db = state
             .db
@@ -1153,6 +1219,28 @@ async fn send_developer_chat_message(
 
         load_developer_patch_context(&db, &conversation_id)?
     };
+    log::debug!(
+        "send_developer_chat_message context loaded: run_id={}, history_items={}, developer_preferences={}, elapsed_ms={}",
+        developer_run_id_for_logs,
+        developer_context.conversation_history.len(),
+        developer_context.developer_preferences.len(),
+        elapsed_ms(context_started_at)
+    );
+    emit_developer_agent_step(
+        Some(&app),
+        &developer_run_id_for_logs,
+        developer_agent_telemetry_step(
+            -6,
+            "developer_context_loaded",
+            command_started_at,
+            &format!(
+                "Załadowano kontekst developer chatu w {} ms. Historia: {} wiadomości. Preferencje developer: {}.",
+                elapsed_ms(context_started_at),
+                developer_context.conversation_history.len(),
+                developer_context.developer_preferences.len()
+            ),
+        ),
+    );
 
     let apply_result = build_and_apply_code_patch(
         input.clone(),
@@ -1163,9 +1251,17 @@ async fn send_developer_chat_message(
         Some(&developer_context),
         developer_run_id,
         Some(&app),
+        Some(&state),
+        request_id.as_deref(),
     )
     .await;
     let assistant_text = developer_chat_response_text(&apply_result);
+    if consume_cancelled_chat_request(&state, request_id.as_deref())? {
+        log::info!(
+            "Developer chat request was cancelled by user; saving interruption summary. request_id={:?}",
+            request_id
+        );
+    }
 
     let (assistant_message, conversation) = {
         let db = state
@@ -1234,6 +1330,12 @@ fn developer_chat_error_text(error: &str) -> String {
         );
     }
 
+    if is_model_action_format_error(error) {
+        return format!(
+            "Model kodujący zwrócił odpowiedź w niepoprawnym formacie akcji.\n\n{error}\n\nKod nie powinien zostać zmieniony, bo błąd wystąpił przed zastosowaniem patcha."
+        );
+    }
+
     if is_patch_application_error(error) {
         return format!(
             "Nie udało mi się wprowadzić zmiany w kodzie.\n\n{error}\n\nPatch nie został zaakceptowany przez git apply. Sprawdź working tree przed kolejną próbą."
@@ -1250,7 +1352,6 @@ fn is_openai_request_error(error: &str) -> bool {
     let normalized = error.to_lowercase();
 
     normalized.contains("openai")
-        || normalized.contains("model")
         || normalized.contains("api_key")
         || normalized.contains("api key")
         || normalized.contains("sending request")
@@ -1258,6 +1359,18 @@ fn is_openai_request_error(error: &str) -> bool {
         || normalized.contains("timeout")
         || normalized.contains("connection")
         || normalized.contains("dns")
+}
+
+/// Rozpoznaje błąd formatu akcji zwróconej przez model, bez mylenia go z awarią połączenia.
+fn is_model_action_format_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+
+    normalized.contains("nie udało się sparsować akcji modelu")
+        || normalized.contains("nie udalo sie sparsowac akcji modelu")
+        || normalized.contains("nie udało się odczytać akcji agenta kodu")
+        || normalized.contains("nie udalo sie odczytac akcji agenta kodu")
+        || normalized.contains("agent kodu nie zwrocil akcji json")
+        || normalized.contains("trailing characters")
 }
 
 /// Rozpoznaje błędy nakładania patcha, dla których komunikat o git apply jest naprawdę trafny.
@@ -1293,6 +1406,53 @@ fn format_developer_agent_steps(agent_steps: &[DeveloperAgentStep]) -> String {
     }
 
     output
+}
+
+/// Dopina do błędu krótkie podsumowanie ostatnich decyzji agenta, żeby nie tracić kontekstu po awarii.
+fn developer_agent_failure_summary(error: &str, agent_steps: &[DeveloperAgentStep]) -> String {
+    if agent_steps.is_empty() {
+        return error.to_string();
+    }
+
+    let visible_steps = agent_steps
+        .iter()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>();
+
+    let mut summary = String::new();
+    summary.push_str(error);
+    summary.push_str("\n\nPodsumowanie pracy agenta przed błędem:\n");
+
+    for step in visible_steps {
+        summary.push_str(&format!("- {}. {}", step.step, step.action));
+
+        if let Some(reason) = &step.reason {
+            summary.push_str(" | powód: ");
+            summary.push_str(&truncate(reason, 220));
+        }
+
+        summary.push_str(" | wynik: ");
+        summary.push_str(&truncate(&step.result.replace('\n', " "), 420));
+        summary.push('\n');
+    }
+
+    summary
+}
+
+/// Sprawdza, czy użytkownik przerwał bieżący developer-run, bez kasowania flagi anulowania.
+fn developer_agent_is_cancelled(
+    state: Option<&State<'_, AppState>>,
+    request_id: Option<&str>,
+) -> Result<bool, String> {
+    let Some(state) = state else {
+        return Ok(false);
+    };
+
+    is_cancelled_chat_request(state, request_id)
 }
 
 #[tauri::command]
@@ -1336,9 +1496,62 @@ fn revert_code_patch(patch: String) -> Result<DeveloperCommandResult, String> {
 }
 
 #[tauri::command]
+fn cancel_pending_chat_request(
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let request_id = request_id.trim().to_string();
+
+    if request_id.is_empty() {
+        return Ok(());
+    }
+
+    let mut cancelled_requests = state
+        .cancelled_chat_requests
+        .lock()
+        .map_err(|_| "Nie udalo sie zatrzymac generowania odpowiedzi.".to_string())?;
+    cancelled_requests.insert(request_id);
+
+    Ok(())
+}
+
+fn consume_cancelled_chat_request(
+    state: &State<'_, AppState>,
+    request_id: Option<&str>,
+) -> Result<bool, String> {
+    let Some(request_id) = request_id else {
+        return Ok(false);
+    };
+
+    let mut cancelled_requests = state
+        .cancelled_chat_requests
+        .lock()
+        .map_err(|_| "Nie udalo sie sprawdzic stanu zatrzymania odpowiedzi.".to_string())?;
+
+    Ok(cancelled_requests.remove(request_id))
+}
+
+fn is_cancelled_chat_request(
+    state: &State<'_, AppState>,
+    request_id: Option<&str>,
+) -> Result<bool, String> {
+    let Some(request_id) = request_id else {
+        return Ok(false);
+    };
+
+    let cancelled_requests = state
+        .cancelled_chat_requests
+        .lock()
+        .map_err(|_| "Nie udalo sie sprawdzic stanu zatrzymania odpowiedzi.".to_string())?;
+
+    Ok(cancelled_requests.contains(request_id))
+}
+
+#[tauri::command]
 async fn send_chat_message(
     conversation_id: Option<String>,
     input: String,
+    request_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ChatResponse, String> {
     let input = input.trim().to_string();
@@ -1358,8 +1571,20 @@ async fn send_chat_message(
 
         (conversation_id, user_message, restored_from_archive)
     };
+    if consume_cancelled_chat_request(&state, request_id.as_deref())? {
+        return Err("Generowanie odpowiedzi zostalo zatrzymane.".to_string());
+    }
+
     let tool_plan = plan_tools_for_input(&input).await?;
+    if consume_cancelled_chat_request(&state, request_id.as_deref())? {
+        return Err("Generowanie odpowiedzi zostalo zatrzymane.".to_string());
+    }
+
     let tool_context = build_tool_context(&input, &tool_plan, &conversation_id, &state).await;
+    if consume_cancelled_chat_request(&state, request_id.as_deref())? {
+        return Err("Generowanie odpowiedzi zostalo zatrzymane.".to_string());
+    }
+
     let openai_input = {
         let db = state
             .db
@@ -1370,6 +1595,9 @@ async fn send_chat_message(
     };
 
     let assistant_text = request_openai_chat(&openai_input).await?;
+    if consume_cancelled_chat_request(&state, request_id.as_deref())? {
+        return Err("Generowanie odpowiedzi zostalo zatrzymane.".to_string());
+    }
 
     let (assistant_message, conversation, existing_memory) = {
         let db = state
@@ -1455,7 +1683,7 @@ async fn send_chat_message(
 
 #[tauri::command]
 async fn request_gpt_feedback(input: String, state: State<'_, AppState>) -> Result<String, String> {
-    let response = send_chat_message(None, input, state).await?;
+    let response = send_chat_message(None, input, None, state).await?;
 
     Ok(response.assistant_message.content)
 }
@@ -2923,16 +3151,64 @@ async fn run_codex_api_agent(
     developer_context: Option<&DeveloperPatchContext>,
     developer_run_id: Option<String>,
     app: Option<&AppHandle>,
+    cancellation_state: Option<&State<'_, AppState>>,
+    request_id: Option<&str>,
 ) -> Result<CodePatchApplyResult, String> {
-    let project_root = project_root_path()?;
-    let file_index = project_code_file_index()?;
+    let run_started_at = Instant::now();
     let developer_run_id = developer_run_id.unwrap_or_else(|| create_id("devrun"));
+
+    emit_developer_agent_step(
+        app,
+        &developer_run_id,
+        developer_agent_telemetry_step(
+            -4,
+            "init",
+            run_started_at,
+            "Start przygotowania agenta kodującego.",
+        ),
+    );
+
+    let project_root_started_at = Instant::now();
+    let project_root = project_root_path()?;
+    emit_developer_agent_step(
+        app,
+        &developer_run_id,
+        developer_agent_telemetry_step(
+            -3,
+            "project_root",
+            run_started_at,
+            &format!(
+                "Ustalono katalog projektu w {} ms: {}",
+                elapsed_ms(project_root_started_at),
+                project_root.display()
+            ),
+        ),
+    );
+
+    let file_index_started_at = Instant::now();
+    let file_index = project_code_file_index()?;
+    emit_developer_agent_step(
+        app,
+        &developer_run_id,
+        developer_agent_telemetry_step(
+            -2,
+            "file_index",
+            run_started_at,
+            &format!(
+                "Zbudowano indeks plików w {} ms. Liczba plików: {}.",
+                elapsed_ms(file_index_started_at),
+                file_index.len()
+            ),
+        ),
+    );
+
     let mut inspected_files = Vec::new();
     let mut read_files = Vec::new();
     let mut transcript = String::new();
     let mut agent_steps = Vec::new();
     let mut applied_patch = String::new();
     let mut changed_files = Vec::new();
+    let mut failed_patch_attempts = 0usize;
     let push_developer_agent_step = |agent_steps: &mut Vec<DeveloperAgentStep>,
                                      step: i64,
                                      action: &str,
@@ -2949,10 +3225,21 @@ async fn run_codex_api_agent(
         0,
         "start",
         None,
-        "Rozpoczęto pracę agenta kodującego.".to_string(),
+        format!(
+            "Rozpoczęto pracę agenta kodującego. Przygotowanie zajęło {} ms.",
+            elapsed_ms(run_started_at)
+        ),
     );
 
     for step in 1..=8 {
+        if developer_agent_is_cancelled(cancellation_state, request_id)? {
+            return Err(developer_agent_failure_summary(
+                "Przerwano pracę agenta kodującego przed rozpoczęciem kolejnego kroku.",
+                &agent_steps,
+            ));
+        }
+
+        let prompt_started_at = Instant::now();
         let agent_input = build_codex_agent_input(
             &task,
             ask_before_change,
@@ -2962,34 +3249,116 @@ async fn run_codex_api_agent(
             &read_files,
             &transcript,
         );
-        let mut streamed_preview = String::new();
-        let mut streamed_since_event = 0usize;
-        let mut stream_event_index = 0i64;
-        let response_text =
-            request_openai_code_text_streamed(CODE_AGENT_INSTRUCTIONS, &agent_input, |delta| {
-                streamed_preview.push_str(delta);
-                streamed_since_event += delta.chars().count();
+        emit_developer_agent_step(
+            app,
+            &developer_run_id,
+            developer_agent_telemetry_step(
+                step * 1000 - 2,
+                "prompt_built",
+                run_started_at,
+                &format!(
+                    "Krok {step}: zbudowano prompt w {} ms. Rozmiar: {} znaków. Przeczytane pliki: {}.",
+                    elapsed_ms(prompt_started_at),
+                    agent_input.chars().count(),
+                    read_files.len()
+                ),
+            ),
+        );
 
-                if stream_event_index == 0 || streamed_since_event >= 240 || delta.contains('\n') {
-                    stream_event_index += 1;
-                    streamed_since_event = 0;
+        let openai_started_at = Instant::now();
+        let mut first_delta_reported = false;
+        emit_developer_agent_step(
+            app,
+            &developer_run_id,
+            developer_agent_telemetry_step(
+                step * 1000 - 1,
+                "openai_request_sent",
+                run_started_at,
+                &format!("Krok {step}: wysłano request do OpenAI Responses API."),
+            ),
+        );
+
+        let response_text = match request_openai_code_text_streamed(
+            CODE_AGENT_INSTRUCTIONS,
+            &agent_input,
+            |_delta| {
+                if !first_delta_reported {
+                    first_delta_reported = true;
                     emit_developer_agent_step(
                         app,
                         &developer_run_id,
-                        DeveloperAgentStep {
-                            step: step * 1000 + stream_event_index,
-                            action: "model_stream".to_string(),
-                            reason: None,
-                            result: format!(
-                                "Model generuje odpowiedz akcji:\n{}",
-                                truncate(&streamed_preview, 1200)
+                        developer_agent_telemetry_step(
+                            step * 1000,
+                            "first_stream_delta",
+                            run_started_at,
+                            &format!(
+                                "Krok {step}: pierwszy fragment streamingu po {} ms od wysłania requestu.",
+                                elapsed_ms(openai_started_at)
                             ),
-                        },
+                        ),
                     );
                 }
-            })
-            .await?;
-        let action = parse_developer_agent_action(&response_text)?;
+            },
+        )
+        .await
+        {
+            Ok(response_text) => response_text,
+            Err(error) => {
+                return Err(developer_agent_failure_summary(
+                    &format!("Krok {step}: model kodujący przerwał pracę.\n{error}"),
+                    &agent_steps,
+                ));
+            }
+        };
+
+        if developer_agent_is_cancelled(cancellation_state, request_id)? {
+            return Err(developer_agent_failure_summary(
+                &format!(
+                    "Przerwano pracę agenta kodującego po odpowiedzi modelu w kroku {step}, przed wykonaniem kolejnej akcji."
+                ),
+                &agent_steps,
+            ));
+        }
+
+        emit_developer_agent_step(
+            app,
+            &developer_run_id,
+            developer_agent_telemetry_step(
+                step * 1000 + 998,
+                "openai_response_done",
+                run_started_at,
+                &format!(
+                    "Krok {step}: zakończono odpowiedź OpenAI po {} ms. Rozmiar odpowiedzi: {} znaków.",
+                    elapsed_ms(openai_started_at),
+                    response_text.chars().count()
+                ),
+            ),
+        );
+
+        let parse_started_at = Instant::now();
+        let action = match parse_developer_agent_action(&response_text) {
+            Ok(action) => action,
+            Err(error) => {
+                return Err(developer_agent_failure_summary(
+                    &format!("Krok {step}: nie udało się sparsować akcji modelu.\n{error}"),
+                    &agent_steps,
+                ));
+            }
+        };
+        emit_developer_agent_step(
+            app,
+            &developer_run_id,
+            developer_agent_telemetry_step(
+                step * 1000 + 999,
+                "action_parsed",
+                run_started_at,
+                &format!(
+                    "Krok {step}: sparsowano akcję '{}' w {} ms.",
+                    action.action,
+                    elapsed_ms(parse_started_at)
+                ),
+            ),
+        );
         let action_name = action.action.clone();
         let action_reason = action.reason.clone().map(|reason| truncate(&reason, 500));
 
@@ -3002,12 +3371,71 @@ async fn run_codex_api_agent(
         }
 
         match action.action.as_str() {
-            "read_file" => {
-                let path = action
-                    .path
+            "search_code" => {
+                let query = action
+                    .query
                     .as_deref()
-                    .ok_or_else(|| "Akcja read_file nie zawiera path.".to_string())?;
-                let file = read_agent_project_file(&project_root, &file_index, path)?;
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        developer_agent_failure_summary(
+                            "Akcja search_code nie zawiera query.",
+                            &agent_steps,
+                        )
+                    })?;
+                let search_started_at = Instant::now();
+                let matches = match search_agent_project_code(&project_root, &file_index, query) {
+                    Ok(matches) => matches,
+                    Err(error) => {
+                        return Err(developer_agent_failure_summary(
+                            &format!("Krok {step}: search_code nie powiódł się.\n{error}"),
+                            &agent_steps,
+                        ));
+                    }
+                };
+                let mut result = format!(
+                    "Wynik search_code dla \"{}\" w {} ms. Dopasowania: {}.\n",
+                    truncate(query, 120),
+                    elapsed_ms(search_started_at),
+                    matches.len()
+                );
+
+                if matches.is_empty() {
+                    result.push_str("- Brak dopasowań. Spróbuj innej, krótszej frazy albo wybierz plik z indeksu.\n");
+                } else {
+                    for item in matches {
+                        result.push_str("- ");
+                        result.push_str(&item);
+                        result.push('\n');
+                    }
+                }
+
+                transcript.push_str(&result);
+                push_developer_agent_step(
+                    &mut agent_steps,
+                    step,
+                    &action_name,
+                    action_reason,
+                    result,
+                );
+            }
+            "read_file" => {
+                let path = action.path.as_deref().ok_or_else(|| {
+                    developer_agent_failure_summary(
+                        "Akcja read_file nie zawiera path.",
+                        &agent_steps,
+                    )
+                })?;
+                let file_read_started_at = Instant::now();
+                let file = match read_agent_project_file(&project_root, &file_index, path) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        return Err(developer_agent_failure_summary(
+                            &format!("Krok {step}: read_file nie powiódł się.\n{error}"),
+                            &agent_steps,
+                        ));
+                    }
+                };
 
                 if !inspected_files.iter().any(|item| item == &file.path) {
                     inspected_files.push(file.path.clone());
@@ -3015,10 +3443,65 @@ async fn run_codex_api_agent(
                 }
 
                 let result = format!(
-                    "Wynik read_file: przeczytano {}.\n",
-                    inspected_files.last().cloned().unwrap_or_default()
+                    "Wynik read_file: przeczytano {} w {} ms.\n",
+                    inspected_files.last().cloned().unwrap_or_default(),
+                    elapsed_ms(file_read_started_at)
                 );
                 transcript.push_str(&result);
+                push_developer_agent_step(
+                    &mut agent_steps,
+                    step,
+                    &action_name,
+                    action_reason,
+                    result,
+                );
+            }
+            "replace_text" => {
+                let path = action.path.as_deref().ok_or_else(|| {
+                    developer_agent_failure_summary(
+                        "Akcja replace_text nie zawiera path.",
+                        &agent_steps,
+                    )
+                })?;
+
+                let find = action.find.as_deref().ok_or_else(|| {
+                    developer_agent_failure_summary(
+                        "Akcja replace_text nie zawiera find.",
+                        &agent_steps,
+                    )
+                })?;
+
+                let replace = action.replace.as_deref().ok_or_else(|| {
+                    developer_agent_failure_summary(
+                        "Akcja replace_text nie zawiera replace.",
+                        &agent_steps,
+                    )
+                })?;
+
+                let result = match replace_agent_project_text(
+                    &project_root,
+                    &file_index,
+                    &inspected_files,
+                    path,
+                    find,
+                    replace,
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        return Err(developer_agent_failure_summary(
+                            &format!("Krok {step}: replace_text nie powiódł się.\n{error}"),
+                            &agent_steps,
+                        ));
+                    }
+                };
+
+                if !changed_files.iter().any(|file| file == path) {
+                    changed_files.push(path.to_string());
+                }
+
+                transcript.push_str(&result);
+                transcript.push('\n');
+
                 push_developer_agent_step(
                     &mut agent_steps,
                     step,
@@ -3038,6 +3521,13 @@ async fn run_codex_api_agent(
                         action_reason.clone(),
                         result,
                     );
+                    failed_patch_attempts += 1;
+                    if failed_patch_attempts >= 2 {
+                        return Err(developer_agent_failure_summary(
+                            "Agent przerwał pracę po 2 nieudanych próbach przygotowania patcha.",
+                            &agent_steps,
+                        ));
+                    }
                     continue;
                 };
                 let Some(mut patch) = extract_diff_payload(raw_patch) else {
@@ -3053,6 +3543,13 @@ async fn run_codex_api_agent(
                         action_reason.clone(),
                         result,
                     );
+                    failed_patch_attempts += 1;
+                    if failed_patch_attempts >= 2 {
+                        return Err(developer_agent_failure_summary(
+                            "Agent przerwał pracę po 2 nieudanych próbach przygotowania patcha.",
+                            &agent_steps,
+                        ));
+                    }
                     continue;
                 };
 
@@ -3067,6 +3564,13 @@ async fn run_codex_api_agent(
                         action_reason.clone(),
                         result,
                     );
+                    failed_patch_attempts += 1;
+                    if failed_patch_attempts >= 2 {
+                        return Err(developer_agent_failure_summary(
+                            "Agent przerwał pracę po 2 odrzuconych próbach patcha.",
+                            &agent_steps,
+                        ));
+                    }
                     continue;
                 }
 
@@ -3083,6 +3587,13 @@ async fn run_codex_api_agent(
                             action_reason.clone(),
                             result,
                         );
+                        failed_patch_attempts += 1;
+                        if failed_patch_attempts >= 2 {
+                            return Err(developer_agent_failure_summary(
+                                "Agent przerwał pracę po 2 odrzuconych próbach patcha.",
+                                &agent_steps,
+                            ));
+                        }
                         continue;
                     }
                 };
@@ -3119,6 +3630,13 @@ async fn run_codex_api_agent(
                                 action_reason.clone(),
                                 result,
                             );
+                            failed_patch_attempts += 1;
+                            if failed_patch_attempts >= 2 {
+                                return Err(developer_agent_failure_summary(
+                                    "Agent przerwał pracę po 2 odrzuconych próbach patcha.",
+                                    &agent_steps,
+                                ));
+                            }
                             continue;
                         }
                     };
@@ -3137,6 +3655,13 @@ async fn run_codex_api_agent(
                             action_reason.clone(),
                             result,
                         );
+                        failed_patch_attempts += 1;
+                        if failed_patch_attempts >= 2 {
+                            return Err(developer_agent_failure_summary(
+                                "Agent przerwał pracę po 2 odrzuconych próbach patcha.",
+                                &agent_steps,
+                            ));
+                        }
                         continue;
                     }
 
@@ -3155,6 +3680,13 @@ async fn run_codex_api_agent(
                                 action_reason.clone(),
                                 result,
                             );
+                            failed_patch_attempts += 1;
+                            if failed_patch_attempts >= 2 {
+                                return Err(developer_agent_failure_summary(
+                                    "Agent przerwał pracę po 2 odrzuconych próbach patcha.",
+                                    &agent_steps,
+                                ));
+                            }
                             continue;
                         }
                     };
@@ -3175,6 +3707,13 @@ async fn run_codex_api_agent(
                             action_reason.clone(),
                             result,
                         );
+                        failed_patch_attempts += 1;
+                        if failed_patch_attempts >= 2 {
+                            return Err(developer_agent_failure_summary(
+                                "Agent przerwał pracę po 2 odrzuconych próbach patcha.",
+                                &agent_steps,
+                            ));
+                        }
                         continue;
                     }
 
@@ -3185,6 +3724,7 @@ async fn run_codex_api_agent(
                 }
 
                 applied_patch = patch;
+                failed_patch_attempts = 0;
                 let result =
                     "Wynik apply_patch: patch zostal zastosowany w working tree.\n".to_string();
                 transcript.push_str(&result);
@@ -3197,7 +3737,15 @@ async fn run_codex_api_agent(
                 );
             }
             "run_build" => {
-                let build_result = run_developer_build()?;
+                let build_result = match run_developer_build() {
+                    Ok(build_result) => build_result,
+                    Err(error) => {
+                        return Err(developer_agent_failure_summary(
+                            &format!("Krok {step}: run_build nie powiódł się.\n{error}"),
+                            &agent_steps,
+                        ));
+                    }
+                };
                 let mut result = "Wynik run_build:\n".to_string();
                 result.push_str(&format!("success: {}\n", build_result.success));
                 result.push_str(&truncate(&build_result.stdout, 4000));
@@ -3233,7 +3781,10 @@ async fn run_codex_api_agent(
             }
             "finish" => {
                 if applied_patch.is_empty() {
-                    return Err("Agent zakonczyl prace bez zastosowania patcha.".to_string());
+                    return Err(developer_agent_failure_summary(
+                        "Agent zakonczyl prace bez zastosowania patcha.",
+                        &agent_steps,
+                    ));
                 }
 
                 return Ok(CodePatchApplyResult {
@@ -3248,13 +3799,19 @@ async fn run_codex_api_agent(
                 });
             }
             other => {
-                return Err(format!("Agent zwrocil nieznana akcje: {other}."));
+                return Err(developer_agent_failure_summary(
+                    &format!("Agent zwrocil nieznana akcje: {other}."),
+                    &agent_steps,
+                ));
             }
         }
     }
 
     if applied_patch.is_empty() {
-        return Err("Agent przekroczyl limit krokow bez zastosowania patcha.".to_string());
+        return Err(developer_agent_failure_summary(
+            "Agent przekroczyl limit krokow bez zastosowania patcha.",
+            &agent_steps,
+        ));
     }
 
     Ok(CodePatchApplyResult {
@@ -3291,14 +3848,38 @@ fn emit_developer_agent_step(app: Option<&AppHandle>, run_id: &str, step: Develo
         return;
     };
 
+    let step_number = step.step;
+    let action = step.action.clone();
     let event = DeveloperAgentStepEvent {
         run_id: run_id.to_string(),
         step,
     };
 
     if let Err(error) = app.emit("developer-agent-step", event) {
-        log::warn!("Nie udalo sie wyslac live logu agenta: {error}");
+        log::warn!(
+            "Nie udalo sie wyslac live logu agenta: run_id={run_id}, step={step_number}, action={action}, error={error}"
+        );
     }
+}
+
+/// Buduje diagnostyczny krok live logu z czasem liczonym od startu całego uruchomienia agenta.
+fn developer_agent_telemetry_step(
+    step: i64,
+    action: &str,
+    run_started_at: Instant,
+    result: &str,
+) -> DeveloperAgentStep {
+    DeveloperAgentStep {
+        step,
+        action: action.to_string(),
+        reason: Some(format!("{} ms od startu", elapsed_ms(run_started_at))),
+        result: truncate(result, 1600),
+    }
+}
+
+/// Zwraca prosty czas trwania w milisekundach dla krótkich pomiarów diagnostycznych.
+fn elapsed_ms(started_at: Instant) -> u128 {
+    started_at.elapsed().as_millis()
 }
 
 /// Ładuje historię aktualnego developer-chatu i preferencje pamięci oznaczone słowem developer.
@@ -3352,8 +3933,8 @@ fn build_codex_agent_input(
         input.push('\n');
     }
 
-    input.push_str("\n\nIndeks plikow projektu XO:\n");
-    for path in file_index.iter().take(500) {
+    input.push_str("\n\nIndeks plikow projektu XO (pierwsze 100 sciezek; uzyj search_code, jesli potrzebujesz znalezc cos poza lista):\n");
+    for path in file_index.iter().take(100) {
         input.push_str("- ");
         input.push_str(path);
         input.push('\n');
@@ -3384,13 +3965,81 @@ fn build_codex_agent_input(
 
 /// Parsuje pojedynczą akcję JSON zwróconą przez model i odrzuca zwykłą odpowiedź tekstową.
 fn parse_developer_agent_action(response_text: &str) -> Result<DeveloperAgentAction, String> {
-    let json_text = extract_json_payload(response_text).ok_or_else(|| {
+    let json_text = extract_first_json_object_payload(response_text).ok_or_else(|| {
         let preview = truncate(&response_text.replace('\n', " "), 500);
         format!("Agent kodu nie zwrocil akcji JSON. Początek odpowiedzi modelu: {preview}")
     })?;
 
     serde_json::from_str::<DeveloperAgentAction>(&json_text)
         .map_err(|error| format!("Nie udało się odczytać akcji agenta kodu. {error}"))
+}
+
+/// Wyciąga pierwszy kompletny obiekt JSON z odpowiedzi agenta, ignorując tekst po nim.
+fn extract_first_json_object_payload(response_text: &str) -> Option<String> {
+    let trimmed = response_text.trim();
+    let without_fence = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    let object_start = without_fence.find('{')?;
+    let candidate = &without_fence[object_start..];
+    let mut stream = serde_json::Deserializer::from_str(candidate).into_iter::<serde_json::Value>();
+    let value = stream.next()?.ok()?;
+
+    if value.is_object() {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+/// Przeszukuje lokalnie dozwolone pliki projektu i zwraca krótkie trafienia z numerami linii.
+fn search_agent_project_code(
+    project_root: &Path,
+    file_index: &[String],
+    raw_query: &str,
+) -> Result<Vec<String>, String> {
+    let query = raw_query.trim().to_lowercase();
+
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut matches = Vec::new();
+
+    for relative_path in file_index {
+        let mut matches_in_file = 0usize;
+        let content = match fs::read_to_string(project_root.join(relative_path)) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+
+        for (line_index, line) in content.lines().enumerate() {
+            if !line.to_lowercase().contains(&query) {
+                continue;
+            }
+
+            matches.push(format!(
+                "{}:{}: {}",
+                relative_path,
+                line_index + 1,
+                truncate(line.trim(), 120)
+            ));
+            matches_in_file += 1;
+
+            if matches.len() >= 16 {
+                return Ok(matches);
+            }
+
+            if matches_in_file >= 2 {
+                break;
+            }
+        }
+    }
+
+    Ok(matches)
 }
 
 /// Czyta jeden plik wskazany przez model tylko wtedy, gdy znajduje się w bezpiecznym indeksie projektu.
@@ -3414,6 +4063,49 @@ fn read_agent_project_file(
         path: normalized,
         excerpt: truncate(&content, 80000),
     })
+}
+///Bezpiecznie zamienia dokładny fragment tekstu w pliku, jeśli występuje dokładnie raz.
+fn replace_agent_project_text(
+    project_root: &Path,
+    file_index: &[String],
+    inspected_files: &[String],
+    raw_path: &str,
+    find: &str,
+    replace: &str,
+) -> Result<String, String> {
+    let normalized = normalize_patch_path(raw_path)?;
+
+    if !file_index.iter().any(|path| path == &normalized) {
+        return Err(format!(
+            "Plik jest poza dozwolonym indeksem projektu: {normalized}"
+        ));
+    }
+    if !inspected_files.iter().any(|path| path == &normalized) {
+        return Err(format!(
+            "Agent probowal zmienic plik, ktorego wczesniej nie przeczytal: {normalized}"
+        ));
+    }
+
+    let path = project_root.join(&normalized);
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("Nie udalo sie odczytac pliku do edycji. {error}"))?;
+
+    let count = content.matches(find).count();
+    if count == 0 {
+        return Err("Fragment find nie wystepuje w pliku".to_string());
+    }
+    if count > 1 {
+        return Err(format!(
+            "Fragment find występuje w pliku {count} razy. Zmiana jest niejednoznaczna"
+        ));
+    }
+
+    let next_content = content.replacen(find, replace, 1);
+
+    fs::write(&path, next_content)
+        .map_err(|error| format!("Nie udalo sie zapisac pliku po edycji. {error}"))?;
+
+    Ok(format!("replace_text: zmieniono {normalized}"))
 }
 
 /// Pilnuje, żeby patch zmieniał wyłącznie pliki, które agent wcześniej jawnie przeczytał.
@@ -3612,7 +4304,7 @@ fn collect_code_files(
 fn should_skip_code_directory(name: &str) -> bool {
     matches!(
         name,
-        ".git" | ".agents" | ".codex" | "node_modules" | "target" | "dist" | "build"
+        ".git" | ".agents" | ".codex" | "node_modules" | "target" | "dist" | "build" | "gen"
     )
 }
 
@@ -5372,6 +6064,7 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(db),
                 pending_google_calendar_oauth: Mutex::new(None),
+                cancelled_chat_requests: Mutex::new(HashSet::new()),
             });
 
             if cfg!(debug_assertions) {
@@ -5406,6 +6099,7 @@ pub fn run() {
             create_realtime_call,
             update_memory_record,
             delete_memory_record,
+            cancel_pending_chat_request,
             send_chat_message,
             request_gpt_feedback,
             list_plugin_connections,

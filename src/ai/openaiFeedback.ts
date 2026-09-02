@@ -104,6 +104,7 @@ export type DeveloperCommandResult = {
 export type SendChatMessageRequest = {
   conversationId: string | null;
   input: string;
+  requestId?: string;
 };
 
 export type SendDeveloperChatMessageRequest = SendChatMessageRequest & {
@@ -293,12 +294,20 @@ export async function revertCodePatch(patch: string) {
   return invoke<DeveloperCommandResult>('revert_code_patch', { patch });
 }
 
-export async function sendChatMessage({ conversationId, input }: SendChatMessageRequest) {
+export async function cancelPendingChatRequest(requestId: string) {
   if (!isTauriRuntimeAvailable()) {
     throw new Error(getTauriOnlyMessage());
   }
 
-  return invoke<ChatResponse>('send_chat_message', { conversationId, input });
+  return invoke<void>('cancel_pending_chat_request', { requestId });
+}
+
+export async function sendChatMessage({ conversationId, input, requestId }: SendChatMessageRequest) {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(getTauriOnlyMessage());
+  }
+
+  return invoke<ChatResponse>('send_chat_message', { conversationId, input, requestId });
 }
 
 export async function sendDeveloperChatMessage({
@@ -307,6 +316,7 @@ export async function sendDeveloperChatMessage({
   askBeforeChange,
   questionPreference,
   developerRunId,
+  requestId,
 }: SendDeveloperChatMessageRequest) {
   if (!isTauriRuntimeAvailable()) {
     throw new Error(getTauriOnlyMessage());
@@ -318,6 +328,7 @@ export async function sendDeveloperChatMessage({
     askBeforeChange,
     questionPreference,
     developerRunId,
+    requestId,
   });
 }
 

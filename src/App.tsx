@@ -12,6 +12,7 @@ import {
   type DeveloperCommandResult,
   applyCodePatch,
   archiveConversation,
+  cancelPendingChatRequest,
   createDeveloperConversation,
   createMemoryRecord,
   deleteConversation,
@@ -158,8 +159,11 @@ const uiCopy = {
     emptyChatBody: 'Wyślij wiadomość, aby rozpocząć.',
     thinking: 'myślę...',
     thinkingFor: 'myślę od',
+    stopGenerating: 'Zatrzymaj',
     developerThinking: 'Agent czyta kod i przygotowuje zmianę. Kroki pracy będą pojawiać się poniżej.',
     developerStartStep: 'Rozpoczęto pracę agenta kodującego.',
+    developerInterrupted: 'Przerwano pracę agenta kodującego.',
+    developerInterruptedSummary: 'Agent został zatrzymany. Ostatnie zarejestrowane kroki:',
     composerFooter: 'Dyktafon zamieni głos na tekst. Calling uruchamia rozmowę realtime.',
     activeVoiceCall: 'Aktywne połączenie głosowe',
     realtimeVoice: 'Głos realtime',
@@ -335,8 +339,11 @@ const uiCopy = {
     emptyChatBody: 'Send a message to start.',
     thinking: 'thinking...',
     thinkingFor: 'thinking for',
+    stopGenerating: 'Stop',
     developerThinking: 'Agent is reading code and preparing a change. Work steps will appear below.',
     developerStartStep: 'Started the coding agent run.',
+    developerInterrupted: 'Stopped the coding agent run.',
+    developerInterruptedSummary: 'The agent was stopped. Last recorded steps:',
     composerFooter: 'Dictation turns voice into text. Calling starts a realtime conversation.',
     activeVoiceCall: 'Active voice connection',
     realtimeVoice: 'Realtime voice',
@@ -628,6 +635,7 @@ export function App() {
   const realtimeRemoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimeAssistantLineIdsRef = useRef<Record<string, string>>({});
   const activeDeveloperRunIdRef = useRef<string | null>(null);
+  const activeChatRequestIdRef = useRef<string | null>(null);
 
   const isRecording = recordingState === 'recording';
   const isTranscribing = recordingState === 'transcribing';
@@ -801,12 +809,38 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    function handleWindowError(event: ErrorEvent) {
+      console.error('[xo:window-error]', {
+        message: event.message,
+        source: event.filename,
+        line: event.lineno,
+        column: event.colno,
+        error: event.error,
+      });
+    }
+
+    function handleUnhandledRejection(event: PromiseRejectionEvent) {
+      console.error('[xo:unhandled-rejection]', event.reason);
+    }
+
+    window.addEventListener('error', handleWindowError);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+
+    return () => {
+      window.removeEventListener('error', handleWindowError);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    };
+  }, []);
+
+  useEffect(() => {
     let isMounted = true;
 
-    const unlistenPromise = listen<{ run_id: string; step: DeveloperAgentStep }>(
+    const unlistenPromise = listen<{ run_id?: string; runId?: string; step: DeveloperAgentStep }>(
       'developer-agent-step',
       (event) => {
-        if (!isMounted || event.payload.run_id !== activeDeveloperRunIdRef.current) {
+        const eventRunId = event.payload.run_id ?? event.payload.runId;
+
+        if (!isMounted || eventRunId !== activeDeveloperRunIdRef.current) {
           return;
         }
 
@@ -815,14 +849,16 @@ export function App() {
             return steps;
           }
 
-          return [...steps, event.payload.step];
+          return [...steps, event.payload.step].slice(-24);
         });
       },
     );
 
     return () => {
       isMounted = false;
-      void unlistenPromise.then((unlisten) => unlisten());
+      void unlistenPromise
+        .then((unlisten) => unlisten())
+        .catch((listenError) => console.error('[developer-agent-step:listen-error]', listenError));
     };
   }, []);
 
@@ -901,6 +937,8 @@ export function App() {
   }, [chatState, responseWaitStartedAt]);
 
   const submitChatInput = useCallback(async (input: string, restoreOnError = true) => {
+    const requestId = crypto.randomUUID();
+    activeChatRequestIdRef.current = requestId;
     setTypedPrompt('');
     setChatError(null);
     setResponseWaitStartedAt(Date.now());
@@ -949,11 +987,17 @@ export function App() {
             askBeforeChange: developerAskBeforeChange,
             questionPreference: developerQuestionPreference,
             developerRunId: developerRunId ?? undefined,
+            requestId,
           })
         : await sendChatMessage({
             conversationId: activeConversationId,
             input,
+            requestId,
           });
+
+      if (activeChatRequestIdRef.current !== requestId) {
+        return false;
+      }
 
       setActiveConversationId(response.conversation.id);
 
@@ -1005,6 +1049,10 @@ export function App() {
 
       return true;
     } catch (sendError) {
+      if (activeChatRequestIdRef.current !== requestId) {
+        return false;
+      }
+
       if (restoreOnError) {
         setTypedPrompt(input);
       }
@@ -1012,10 +1060,13 @@ export function App() {
 
       return false;
     } finally {
-      activeDeveloperRunIdRef.current = null;
-      setIsDeveloperChatRunning(false);
-      setResponseWaitStartedAt(null);
-      setChatState('idle');
+      if (activeChatRequestIdRef.current === requestId) {
+        activeChatRequestIdRef.current = null;
+        activeDeveloperRunIdRef.current = null;
+        setIsDeveloperChatRunning(false);
+        setResponseWaitStartedAt(null);
+        setChatState('idle');
+      }
     }
   }, [
     activeConversation?.kind,
@@ -1076,6 +1127,57 @@ export function App() {
     }
 
     await submitChatInput(retryInput);
+  }
+
+  function formatInterruptedDeveloperMessage(steps: DeveloperAgentStep[]) {
+    const visibleSteps = steps.slice(-8);
+
+    if (visibleSteps.length === 0) {
+      return copy.developerInterrupted;
+    }
+
+    const summary = visibleSteps
+      .map((step) => {
+        const reason = step.reason ? ` ${copy.agentStepReason}: ${step.reason}.` : '';
+        return `- ${step.step}. ${step.action}.${reason} ${copy.agentStepResult}: ${step.result
+          .replace(/\s+/g, ' ')
+          .slice(0, 420)}`;
+      })
+      .join('\n');
+
+    return `${copy.developerInterrupted}\n\n${copy.developerInterruptedSummary}\n${summary}`;
+  }
+
+  function handleStopPendingResponse() {
+    const requestId = activeChatRequestIdRef.current;
+
+    if (!requestId) {
+      return;
+    }
+
+    if (isDeveloperChatRunning) {
+      const conversationId = activeConversationId ?? messages[messages.length - 1]?.conversation_id;
+      const interruptedMessage: TemporaryChatMessage = {
+        id: crypto.randomUUID(),
+        conversation_id: conversationId ?? crypto.randomUUID(),
+        role: 'assistant',
+        content: formatInterruptedDeveloperMessage(liveDeveloperAgentSteps),
+        created_at: Math.floor(Date.now() / 1000),
+        status: 'failed',
+      };
+
+      setMessages((currentMessages) => [...currentMessages, interruptedMessage]);
+    }
+
+    activeChatRequestIdRef.current = null;
+    activeDeveloperRunIdRef.current = null;
+    setIsDeveloperChatRunning(false);
+    setResponseWaitStartedAt(null);
+    setResponseWaitSeconds(0);
+    setChatState('idle');
+    void cancelPendingChatRequest(requestId).catch((cancelError) => {
+      setChatError(getErrorMessage(cancelError));
+    });
   }
 
   function handleNewConversation() {
@@ -2365,6 +2467,13 @@ export function App() {
                       {renderDeveloperAgentSteps(liveDeveloperAgentSteps)}
                     </details>
                   )}
+                <button
+                  className="stopGeneratingButton"
+                  type="button"
+                  onClick={handleStopPendingResponse}
+                >
+                  {copy.stopGenerating}
+                </button>
               </article>
             )}
           </div>
